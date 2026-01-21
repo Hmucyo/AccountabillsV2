@@ -1,9 +1,28 @@
 import { useState } from 'react';
 import { Wallet, Shield, Users, ArrowRight, Eye, EyeOff, Mail } from 'lucide-react';
+import { signUp, signIn } from '../utils/api';
 
 interface LandingPageProps {
-  onLogin: () => void;
+  onLogin: (user: { name: string; email: string }) => void;
 }
+
+// Phone number formatting function
+const formatPhoneNumber = (value: string): string => {
+  // Remove all non-digit characters
+  const digits = value.replace(/\D/g, '');
+  
+  // Limit to 10 digits
+  const limitedDigits = digits.slice(0, 10);
+  
+  // Format as (XXX) XXX-XXXX
+  if (limitedDigits.length <= 3) {
+    return limitedDigits;
+  } else if (limitedDigits.length <= 6) {
+    return `(${limitedDigits.slice(0, 3)}) ${limitedDigits.slice(3)}`;
+  } else {
+    return `(${limitedDigits.slice(0, 3)}) ${limitedDigits.slice(3, 6)}-${limitedDigits.slice(6)}`;
+  }
+};
 
 export function LandingPage({ onLogin }: LandingPageProps) {
   const [showAuth, setShowAuth] = useState(false);
@@ -12,22 +31,89 @@ export function LandingPage({ onLogin }: LandingPageProps) {
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [resetEmailSent, setResetEmailSent] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
-    username: '',
+    name: '',
     email: '',
     phone: '',
     password: ''
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // In a real app, this would authenticate with backend
-    onLogin();
+    setError('');
+    setLoading(true);
+
+    try {
+      if (isSignUp) {
+        // Sign up with backend
+        console.log('🔵 Starting signup process...');
+        const signUpResponse = await signUp(formData.email, formData.password, formData.name);
+        
+        // Check if we need to sign in
+        if (signUpResponse.requiresSignIn) {
+          console.log('✅ Signup successful, now signing in...');
+          
+          // Add a small delay to ensure user is fully registered in Supabase
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          try {
+            const { user } = await signIn(formData.email, formData.password);
+            const userName = user?.user_metadata?.name || formData.name;
+            const userEmail = user?.email || formData.email;
+            console.log('✅ Sign in successful:', userName);
+            onLogin({ name: userName, email: userEmail });
+          } catch (signInError: any) {
+            console.error('❌ Sign in error after signup:', signInError);
+            
+            // If sign in fails, wait a bit longer and try one more time
+            console.log('🔄 Retrying sign in after delay...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            try {
+              const { user } = await signIn(formData.email, formData.password);
+              const userName = user?.user_metadata?.name || formData.name;
+              const userEmail = user?.email || formData.email;
+              console.log('✅ Sign in successful on retry:', userName);
+              onLogin({ name: userName, email: userEmail });
+            } catch (retryError: any) {
+              console.error('❌ Sign in failed on retry:', retryError);
+              throw new Error('Account created but sign in failed. Please try signing in manually.');
+            }
+          }
+        } else {
+          // Session was returned from signup directly (shouldn't happen with current backend)
+          const userName = signUpResponse.user?.user_metadata?.name || formData.name;
+          const userEmail = signUpResponse.user?.email || formData.email;
+          onLogin({ name: userName, email: userEmail });
+        }
+      } else {
+        // Sign in
+        console.log('🔵 Signing in...');
+        const { user } = await signIn(formData.email, formData.password);
+        const userName = user?.user_metadata?.name || 'User';
+        const userEmail = user?.email || '';
+        console.log('✅ Sign in successful:', userName);
+        onLogin({ name: userName, email: userEmail });
+      }
+    } catch (err: any) {
+      console.error('Auth error:', err);
+      
+      // Check if it's a network/server error
+      if (err.message?.includes('fetch') || err.message?.includes('NetworkError') || err.message?.includes('Failed to fetch')) {
+        setError('Backend server is not responding. The server may need to be deployed. Check the console for details.');
+      } else {
+        setError(err.message || 'Authentication failed. Please try again.');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleGoogleSignIn = () => {
     // In a real app, this would use Google OAuth
-    onLogin();
+    onLogin({ name: 'Demo User', email: 'demo@example.com' });
   };
 
   const handleForgotPassword = (e: React.FormEvent) => {
@@ -200,13 +286,13 @@ export function LandingPage({ onLogin }: LandingPageProps) {
             {isSignUp && (
               <>
                 <div>
-                  <label className="block text-gray-700 mb-2">Username</label>
+                  <label className="block text-gray-700 mb-2">Name</label>
                   <input
                     type="text"
-                    value={formData.username}
-                    onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                    placeholder="Choose a username"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF]"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    placeholder="Enter your name"
+                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF] text-gray-900 placeholder-gray-500"
                     required
                   />
                 </div>
@@ -218,7 +304,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                     placeholder="your@email.com"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF]"
+                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF] text-gray-900 placeholder-gray-500"
                     required
                   />
                 </div>
@@ -228,9 +314,9 @@ export function LandingPage({ onLogin }: LandingPageProps) {
                   <input
                     type="tel"
                     value={formData.phone}
-                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    onChange={(e) => setFormData({ ...formData, phone: formatPhoneNumber(e.target.value) })}
                     placeholder="+1 (555) 000-0000"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF]"
+                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF] text-gray-900 placeholder-gray-500"
                     required
                   />
                 </div>
@@ -242,10 +328,10 @@ export function LandingPage({ onLogin }: LandingPageProps) {
                 <label className="block text-gray-700 mb-2">Username or Email</label>
                 <input
                   type="text"
-                  value={formData.username}
-                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   placeholder="Enter username or email"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF]"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF] text-gray-900 placeholder-gray-500"
                   required
                 />
               </div>
@@ -259,7 +345,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   placeholder="Enter password"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF]"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF] text-gray-900 placeholder-gray-500"
                   required
                 />
                 <button
@@ -283,9 +369,28 @@ export function LandingPage({ onLogin }: LandingPageProps) {
               )}
             </div>
 
+            {error && (
+              <div className="mb-4 p-3 bg-red-100 dark:bg-red-900/30 border border-red-400 dark:border-red-700 rounded-xl">
+                <p className="text-red-700 dark:text-red-300 text-sm">{error}</p>
+                {error.includes('backend') || error.includes('Backend') || error.includes('server') ? (
+                  <button
+                    onClick={() => {
+                      console.log('⚠️ Using demo mode - bypassing backend');
+                      setError('');
+                      onLogin({ name: 'Demo User', email: 'demo@example.com' });
+                    }}
+                    className="mt-2 text-sm text-red-700 dark:text-red-300 underline hover:no-underline"
+                  >
+                    Continue in Demo Mode (without backend)
+                  </button>
+                ) : null}
+              </div>
+            )}
+
             <button
               type="submit"
               className="w-full bg-[#9E89FF] text-white py-3 rounded-xl hover:bg-[#8B76F0] transition-colors"
+              disabled={loading}
             >
               {isSignUp ? 'Create Account' : 'Sign In'}
             </button>

@@ -1,23 +1,45 @@
 import { useState } from 'react';
 import { Wallet, Plus, ArrowDownToLine, CreditCard, Building2, Apple, TrendingUp, Clock } from 'lucide-react';
 
+interface Transaction {
+  id: string;
+  type: string;
+  description: string;
+  amount: number;
+  date: string;
+  status: string;
+  fee?: number;
+}
+
+interface BankAccount {
+  id: string;
+  name: string;
+  accountNumber: string;
+  status: string;
+}
+
 interface AccountabillsWalletProps {
   balance: number;
   setBalance: (balance: number) => void;
+  accessibleFunds: number;
   onNavigateToProfile?: () => void;
+  transactions?: Transaction[];
+  bankAccounts?: BankAccount[];
+  currentUser?: { name: string; email: string; } | null;
 }
 
-export function AccountabillsWallet({ balance, setBalance, onNavigateToProfile }: AccountabillsWalletProps) {
+export function AccountabillsWallet({ 
+  balance, 
+  setBalance, 
+  accessibleFunds, 
+  onNavigateToProfile,
+  transactions = [],
+  bankAccounts = [],
+  currentUser = null
+}: AccountabillsWalletProps) {
   const [showAddMoney, setShowAddMoney] = useState(false);
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [amount, setAmount] = useState('');
-
-  const transactions = [
-    { id: '1', type: 'approved', description: 'Team building event', amount: -1500.00, date: '2024-11-24', status: 'completed' },
-    { id: '2', type: 'deposit', description: 'Added from Bank of America', amount: 2000.00, date: '2024-11-22', status: 'completed' },
-    { id: '3', type: 'approved', description: 'Office supplies', amount: -250.00, date: '2024-11-20', status: 'completed' },
-    { id: '4', type: 'withdraw', description: 'Instant withdrawal', amount: -500.00, date: '2024-11-18', status: 'completed', fee: 9.75 }
-  ];
 
   const handleAddMoney = () => {
     if (amount && parseFloat(amount) > 0) {
@@ -37,6 +59,17 @@ export function AccountabillsWallet({ balance, setBalance, onNavigateToProfile }
     }
   };
 
+  // Generate initials from user's name
+  const getUserInitials = () => {
+    if (!currentUser?.name) return 'U';
+    return currentUser.name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#9E89FF] to-[#7B68EE] pb-20">
       {/* Header */}
@@ -50,7 +83,7 @@ export function AccountabillsWallet({ balance, setBalance, onNavigateToProfile }
             onClick={onNavigateToProfile}
             className="w-10 h-10 bg-white dark:bg-gray-200 bg-opacity-30 dark:bg-opacity-40 rounded-full flex items-center justify-center text-white dark:text-gray-900 shadow-lg hover:bg-opacity-40 dark:hover:bg-opacity-50 transition-colors flex-shrink-0 border-2 border-white dark:border-gray-300 border-opacity-80"
           >
-            <span className="text-sm font-semibold">JD</span>
+            <span className="text-sm font-semibold">{getUserInitials()}</span>
           </button>
         )}
       </div>
@@ -58,8 +91,16 @@ export function AccountabillsWallet({ balance, setBalance, onNavigateToProfile }
       {/* Balance Card */}
       <div className="mx-4 mb-6">
         <div className="bg-white dark:bg-black bg-opacity-40 dark:bg-opacity-30 backdrop-blur-lg rounded-3xl p-6 shadow-2xl border border-gray-200 dark:border-transparent">
-          <p className="text-purple-700 dark:text-purple-200 mb-2">Available Balance</p>
-          <h2 className="text-gray-900 dark:text-white mb-6">${balance.toFixed(2)}</h2>
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <p className="text-purple-700 dark:text-purple-200 mb-2">Available Balance</p>
+              <h2 className="text-gray-900 dark:text-white mb-1">${balance.toFixed(2)}</h2>
+            </div>
+            <div className="text-right">
+              <p className="text-green-700 dark:text-green-300 text-sm mb-2">Accessible Funds</p>
+              <p className="text-gray-900 dark:text-white text-xl">${accessibleFunds.toFixed(2)}</p>
+            </div>
+          </div>
           
           <div className="flex gap-3">
             <button
@@ -117,16 +158,18 @@ export function AccountabillsWallet({ balance, setBalance, onNavigateToProfile }
       <div className="bg-white dark:bg-gray-900 rounded-t-3xl pt-6 px-4">
         <h3 className="text-gray-900 dark:text-white mb-3">Linked Bank Accounts</h3>
         <div className="space-y-3 mb-6">
-          <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 flex items-center gap-3">
-            <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900 rounded-xl flex items-center justify-center">
-              <Building2 className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+          {bankAccounts.map(account => (
+            <div key={account.id} className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 flex items-center gap-3">
+              <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900 rounded-xl flex items-center justify-center">
+                <Building2 className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+              </div>
+              <div className="flex-1">
+                <p className="text-gray-900 dark:text-white">{account.name}</p>
+                <p className="text-gray-600 dark:text-gray-400 text-sm">••••{account.accountNumber}</p>
+              </div>
+              <p className="text-green-600 dark:text-green-400">{account.status}</p>
             </div>
-            <div className="flex-1">
-              <p className="text-gray-900 dark:text-white">Bank of America</p>
-              <p className="text-gray-600 dark:text-gray-400 text-sm">••••1234</p>
-            </div>
-            <p className="text-green-600 dark:text-green-400">Connected</p>
-          </div>
+          ))}
 
           <button className="w-full border-2 border-dashed border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 py-4 rounded-xl hover:border-[#9E89FF] hover:text-[#9E89FF] transition-colors flex items-center justify-center gap-2">
             <Plus className="w-5 h-5" />
@@ -137,24 +180,32 @@ export function AccountabillsWallet({ balance, setBalance, onNavigateToProfile }
         {/* Transaction History */}
         <h3 className="text-gray-900 dark:text-white mb-3">Recent Transactions</h3>
         <div className="space-y-3 pb-6">
-          {transactions.map(transaction => (
-            <div key={transaction.id} className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4">
-              <div className="flex items-start justify-between mb-1">
-                <div className="flex-1">
-                  <p className="text-gray-900 dark:text-white mb-1">{transaction.description}</p>
-                  <p className="text-gray-600 dark:text-gray-400 text-sm">{new Date(transaction.date).toLocaleDateString()}</p>
-                </div>
-                <div className="text-right">
-                  <p className={`text-gray-900 dark:text-white mb-1 ${transaction.amount > 0 ? 'text-green-600 dark:text-green-400' : ''}`}>
-                    {transaction.amount > 0 ? '+' : ''}${Math.abs(transaction.amount).toFixed(2)}
-                  </p>
-                  {transaction.fee && (
-                    <p className="text-gray-500 dark:text-gray-400 text-xs">Fee: ${transaction.fee.toFixed(2)}</p>
-                  )}
+          {transactions.length === 0 ? (
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-8 text-center">
+              <Clock className="w-12 h-12 text-gray-400 dark:text-gray-600 mx-auto mb-3" />
+              <p className="text-gray-600 dark:text-gray-400 mb-1">No transactions yet</p>
+              <p className="text-gray-500 dark:text-gray-500 text-sm">Your transaction history will appear here</p>
+            </div>
+          ) : (
+            transactions.map(transaction => (
+              <div key={transaction.id} className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4">
+                <div className="flex items-start justify-between mb-1">
+                  <div className="flex-1">
+                    <p className="text-gray-900 dark:text-white mb-1">{transaction.description}</p>
+                    <p className="text-gray-600 dark:text-gray-400 text-sm">{new Date(transaction.date).toLocaleDateString()}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className={`text-gray-900 dark:text-white mb-1 ${transaction.amount > 0 ? 'text-green-600 dark:text-green-400' : ''}`}>
+                      {transaction.amount > 0 ? '+' : ''}${Math.abs(transaction.amount).toFixed(2)}
+                    </p>
+                    {transaction.fee && (
+                      <p className="text-gray-500 dark:text-gray-400 text-xs">Fee: ${transaction.fee.toFixed(2)}</p>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 

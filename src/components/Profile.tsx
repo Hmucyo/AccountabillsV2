@@ -1,6 +1,7 @@
-import { Mail, Shield, UserCircle, Plus, Users, Trash2, Settings, Upload, UserPlus, MessageCircle, Moon, Sun, ChevronDown } from 'lucide-react';
+import { Mail, Shield, UserCircle, Plus, Users, Trash2, Settings, Upload, UserPlus, MessageCircle, Moon, Sun, ChevronDown, LogOut } from 'lucide-react';
 import { Approver } from '../App';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { checkContactUsers, sendInvitation } from '../utils/api';
 
 interface ProfileProps {
   approvers: Approver[];
@@ -11,18 +12,32 @@ interface ProfileProps {
   isDarkMode?: boolean;
   setIsDarkMode?: (isDark: boolean) => void;
   onMessageApprover?: (approverId: string) => void;
+  onLogout?: () => void;
+  currentUser?: { name: string; email: string; } | null;
 }
 
-export function Profile({ approvers, addApprover, removeApprover, approvalThreshold, setApprovalThreshold, isDarkMode, setIsDarkMode, onMessageApprover }: ProfileProps) {
+interface ContactWithStatus {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  isAccountabillsUser?: boolean;
+  userId?: string | null;
+}
+
+export function Profile({ approvers, addApprover, removeApprover, approvalThreshold, setApprovalThreshold, isDarkMode, setIsDarkMode, onMessageApprover, onLogout, currentUser }: ProfileProps) {
   const [showAddApprover, setShowAddApprover] = useState(false);
   const [newApproverName, setNewApproverName] = useState('');
   const [newApproverEmail, setNewApproverEmail] = useState('');
   const [newApproverRole, setNewApproverRole] = useState<'approver' | 'viewer'>('approver');
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [showPartnersList, setShowPartnersList] = useState(false);
+  const [contacts, setContacts] = useState<ContactWithStatus[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [sendingInvitation, setSendingInvitation] = useState<string | null>(null);
 
-  // Simulated contacts - in a real app, this would come from the device's contact list
-  const mockContacts = [
+  // Mock contacts - will be replaced with real contacts when user grants permission
+  const mockContacts: ContactWithStatus[] = [
     { id: '1', name: 'Jennifer Smith', email: 'jennifer.s@email.com', phone: '+1 (555) 123-4567' },
     { id: '2', name: 'David Brown', email: 'david.brown@email.com', phone: '+1 (555) 234-5678' },
     { id: '3', name: 'Lisa Anderson', email: 'lisa.a@email.com', phone: '+1 (555) 345-6789' },
@@ -42,10 +57,15 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
     // }
     
     // For demo, show modal with mock contacts
-    setShowContactPicker(true);
+    setLoadingContacts(true);
+    setTimeout(() => {
+      setContacts(mockContacts);
+      setLoadingContacts(false);
+      setShowContactPicker(true);
+    }, 1000);
   };
 
-  const addContactAsApprover = (contact: any, role: 'approver' | 'viewer') => {
+  const addContactAsApprover = (contact: ContactWithStatus, role: 'approver' | 'viewer') => {
     const initials = contact.name
       .split(' ')
       .map((n: string) => n[0])
@@ -89,6 +109,61 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
     setShowAddApprover(false);
   };
 
+  // Check if contacts are ACCOUNTABILLS users when they're loaded
+  useEffect(() => {
+    const checkUsers = async () => {
+      if (contacts.length === 0) return;
+      
+      try {
+        console.log('🔍 Checking which contacts are ACCOUNTABILLS users...');
+        const response = await checkContactUsers(contacts);
+        
+        if (response.contacts) {
+          setContacts(response.contacts);
+          const usersCount = response.contacts.filter((c: ContactWithStatus) => c.isAccountabillsUser).length;
+          console.log(`✅ Found ${usersCount} ACCOUNTABILLS users out of ${contacts.length} contacts`);
+        }
+      } catch (error: any) {
+        console.error('❌ Error checking contact users:', error);
+        
+        // If it's an auth error, just skip the check
+        // Users can still add contacts manually, they just won't know who's already on the app
+        if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
+          console.log('⚠️ Not authenticated - skipping user check. Contacts can still be added manually.');
+        }
+      }
+    };
+
+    // Add a small delay to ensure authentication is complete
+    const timer = setTimeout(checkUsers, 500);
+    return () => clearTimeout(timer);
+  }, [contacts.length]);
+
+  const handleSendInvitation = async (contact: ContactWithStatus) => {
+    setSendingInvitation(contact.email);
+    try {
+      console.log(`📧 Sending invitation to ${contact.name}...`);
+      await sendInvitation(contact.email, contact.phone, contact.name);
+      alert(`Invitation sent to ${contact.name}!`);
+    } catch (error) {
+      console.error('Error sending invitation:', error);
+      alert(`Failed to send invitation to ${contact.name}`);
+    } finally {
+      setSendingInvitation(null);
+    }
+  };
+
+  // Generate initials from user's name
+  const getUserInitials = () => {
+    if (!currentUser?.name) return 'U';
+    return currentUser.name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
   return (
     <div className="p-4">
       {/* Header */}
@@ -101,11 +176,11 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
       <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-sm border border-gray-200 dark:border-gray-700 mb-6">
         <div className="flex items-center gap-4 mb-4">
           <div className="w-16 h-16 bg-[#9E89FF] rounded-full flex items-center justify-center text-white">
-            <span className="text-2xl">JD</span>
+            <span className="text-2xl">{getUserInitials()}</span>
           </div>
           <div>
-            <p className="text-gray-900 dark:text-white mb-1">John Doe</p>
-            <p className="text-gray-600 dark:text-gray-400">john.doe@email.com</p>
+            <p className="text-gray-900 dark:text-white mb-1">{currentUser?.name || 'John Doe'}</p>
+            <p className="text-gray-600 dark:text-gray-400">{currentUser?.email || 'john.doe@email.com'}</p>
           </div>
         </div>
         <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -304,7 +379,9 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
             </div>
             
             <div className="flex-1 overflow-y-auto p-6 space-y-3">
-              {mockContacts.map(contact => {
+              {loadingContacts ? (
+                <div className="text-center text-gray-600 dark:text-gray-400">Loading contacts...</div>
+              ) : contacts.map(contact => {
                 const isAlreadyAdded = approvers.some(a => a.email === contact.email);
                 return (
                   <div 
@@ -326,7 +403,7 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
                       <div className="text-center py-2 bg-gray-200 dark:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-400 text-sm">
                         Already Added
                       </div>
-                    ) : (
+                    ) : contact.isAccountabillsUser === true ? (
                       <div className="flex gap-2">
                         <button
                           onClick={() => {
@@ -345,6 +422,51 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
                           className="flex-1 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors text-sm"
                         >
                           Add as Viewer
+                        </button>
+                      </div>
+                    ) : contact.isAccountabillsUser === false ? (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleSendInvitation(contact)}
+                          className={`flex-1 bg-[#9E89FF] text-white py-2 rounded-lg hover:bg-[#8B76F0] transition-colors text-sm ${
+                            sendingInvitation === contact.email ? 'opacity-50' : ''
+                          }`}
+                          disabled={sendingInvitation === contact.email}
+                        >
+                          {sendingInvitation === contact.email ? 'Sending...' : 'Invite to Accountabills'}
+                        </button>
+                      </div>
+                    ) : (
+                      // User status unknown - show both options
+                      <div className="space-y-2">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              addContactAsApprover(contact, 'approver');
+                              setShowContactPicker(false);
+                            }}
+                            className="flex-1 bg-[#9E89FF] text-white py-2 rounded-lg hover:bg-[#8B76F0] transition-colors text-sm"
+                          >
+                            Add as Approver
+                          </button>
+                          <button
+                            onClick={() => {
+                              addContactAsApprover(contact, 'viewer');
+                              setShowContactPicker(false);
+                            }}
+                            className="flex-1 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors text-sm"
+                          >
+                            Add as Viewer
+                          </button>
+                        </div>
+                        <button
+                          onClick={() => handleSendInvitation(contact)}
+                          className={`w-full bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 py-2 rounded-lg hover:bg-purple-200 dark:hover:bg-purple-800 transition-colors text-sm ${
+                            sendingInvitation === contact.email ? 'opacity-50' : ''
+                          }`}
+                          disabled={sendingInvitation === contact.email}
+                        >
+                          {sendingInvitation === contact.email ? 'Sending...' : 'Or Send Invitation'}
                         </button>
                       </div>
                     )}
@@ -378,8 +500,12 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
           <button className="w-full bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-left px-4 py-3 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
             Help & Support
           </button>
-          <button className="w-full bg-red-600 dark:bg-red-700 text-white text-left px-4 py-3 rounded-lg hover:bg-red-700 dark:hover:bg-red-800 transition-colors">
-            Sign Out
+          <button
+            onClick={onLogout}
+            className="w-full bg-red-600 dark:bg-red-700 text-white px-4 py-3 rounded-lg hover:bg-red-700 dark:hover:bg-red-800 transition-colors flex items-center"
+          >
+            <LogOut className="w-5 h-5 mr-2" />
+            <span>Sign Out</span>
           </button>
         </div>
       </div>

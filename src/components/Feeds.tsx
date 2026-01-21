@@ -7,9 +7,10 @@ interface FeedsProps {
   approvers: Approver[];
   updateRequestStatus: (id: string, status: any, notes?: string, approver?: string) => void;
   onNavigateToProfile?: () => void;
+  currentUser?: { name: string; email: string; } | null;
 }
 
-export function Feeds({ feedItems, requests, approvers, updateRequestStatus, onNavigateToProfile }: FeedsProps) {
+export function Feeds({ feedItems, requests, approvers, updateRequestStatus, onNavigateToProfile, currentUser }: FeedsProps) {
   const getTimeAgo = (timestamp: string) => {
     const now = new Date();
     const time = new Date(timestamp);
@@ -68,6 +69,17 @@ export function Feeds({ feedItems, requests, approvers, updateRequestStatus, onN
     return date;
   };
 
+  // Generate initials from user's name
+  const getUserInitials = () => {
+    if (!currentUser?.name) return 'U';
+    return currentUser.name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
   return (
     <div className="p-4">
       {/* Header */}
@@ -81,7 +93,7 @@ export function Feeds({ feedItems, requests, approvers, updateRequestStatus, onN
             onClick={onNavigateToProfile}
             className="w-10 h-10 bg-[#9E89FF] rounded-full flex items-center justify-center text-white shadow-md hover:bg-[#8B76F0] transition-colors flex-shrink-0"
           >
-            <span className="text-sm">JD</span>
+            <span className="text-sm">{getUserInitials()}</span>
           </button>
         )}
       </div>

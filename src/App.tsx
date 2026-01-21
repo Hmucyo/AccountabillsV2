@@ -11,6 +11,8 @@ import { AccountabillsWallet } from './components/AccountabillsWallet';
 import { CameraCapture } from './components/CameraCapture';
 import { ReviewRequest } from './components/ReviewRequest';
 import { Notifications } from './components/Notifications';
+import { getSession, signOut } from './utils/api';
+import { testBackendConnection } from './utils/testBackend';
 
 export type RequestStatus = 'pending' | 'approved' | 'rejected';
 
@@ -83,6 +85,7 @@ type View = 'dashboard' | 'requests' | 'approvals' | 'profile' | 'feeds' | 'mess
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string } | null>(null);
   const [currentView, setCurrentView] = useState<View>('dashboard');
   const [previousView, setPreviousView] = useState<View>('dashboard');
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -99,204 +102,288 @@ export default function App() {
     }
   }, [isDarkMode]);
   
-  const [requests, setRequests] = useState<MoneyRequest[]>([
-    {
-      id: '1',
-      amount: 250.00,
-      description: 'Office supplies for Q4',
-      category: 'Office',
-      date: '2024-11-20',
-      status: 'pending',
-      submittedBy: 'You',
-      approvers: ['Sarah Chen'],
-      imageUrl: 'https://images.unsplash.com/photo-1484480974693-6ca0a78fb36b?w=400'
-    },
-    {
-      id: '2',
-      amount: 1500.00,
-      description: 'Team building event',
-      category: 'Events',
-      date: '2024-11-18',
-      status: 'approved',
-      submittedBy: 'You',
-      approvers: ['Sarah Chen'],
-      approvedBy: ['Sarah Chen'],
-      imageUrl: 'https://images.unsplash.com/photo-1511795409834-ef04bbd61622?w=400'
-    },
-    {
-      id: '3',
-      amount: 450.00,
-      description: 'Software licenses',
-      category: 'Software',
-      date: '2024-11-22',
-      status: 'pending',
-      submittedBy: 'Alex Martinez',
-      approvers: ['You'],
-      imageUrl: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=400'
-    },
-    {
-      id: '4',
-      amount: 800.00,
-      description: 'Client dinner',
-      category: 'Entertainment',
-      date: '2024-11-15',
-      status: 'rejected',
-      submittedBy: 'You',
-      approvers: ['Mike Johnson'],
-      rejectedBy: 'Mike Johnson',
-      notes: 'Please provide itemized receipt',
-      imageUrl: 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=400'
+  // Demo data for John Doe only
+  const getInitialRequests = (): MoneyRequest[] => {
+    if (currentUser?.name === 'John Doe') {
+      return [
+        {
+          id: '1',
+          amount: 250.00,
+          description: 'Office supplies for Q4',
+          category: 'Office',
+          date: '2024-11-20',
+          status: 'pending',
+          submittedBy: 'You',
+          approvers: ['Sarah Chen'],
+          imageUrl: 'https://images.unsplash.com/photo-1484480974693-6ca0a78fb36b?w=400'
+        },
+        {
+          id: '2',
+          amount: 1500.00,
+          description: 'Team building event',
+          category: 'Events',
+          date: '2024-11-18',
+          status: 'approved',
+          submittedBy: 'You',
+          approvers: ['Sarah Chen'],
+          approvedBy: ['Sarah Chen'],
+          imageUrl: 'https://images.unsplash.com/photo-1511795409834-ef04bbd61622?w=400'
+        },
+        {
+          id: '3',
+          amount: 450.00,
+          description: 'Software licenses',
+          category: 'Software',
+          date: '2024-11-22',
+          status: 'pending',
+          submittedBy: 'Alex Martinez',
+          approvers: ['You'],
+          imageUrl: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=400'
+        },
+        {
+          id: '4',
+          amount: 800.00,
+          description: 'Client dinner',
+          category: 'Entertainment',
+          date: '2024-11-15',
+          status: 'rejected',
+          submittedBy: 'You',
+          approvers: ['Mike Johnson'],
+          rejectedBy: 'Mike Johnson',
+          notes: 'Please provide itemized receipt',
+          imageUrl: 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=400'
+        }
+      ];
     }
-  ]);
+    return [];
+  };
 
-  const [approvers, setApprovers] = useState<Approver[]>([
-    { id: '1', name: 'Sarah Chen', email: 'sarah.chen@company.com', avatar: 'SC', role: 'approver' },
-    { id: '2', name: 'Mike Johnson', email: 'mike.j@company.com', avatar: 'MJ', role: 'approver' },
-    { id: '3', name: 'Emma Wilson', email: 'emma.w@company.com', avatar: 'EW', role: 'viewer' }
-  ]);
+  const getInitialApprovers = (): Approver[] => {
+    if (currentUser?.name === 'John Doe') {
+      return [
+        { id: '1', name: 'Sarah Chen', email: 'sarah.chen@company.com', avatar: 'SC', role: 'approver' },
+        { id: '2', name: 'Mike Johnson', email: 'mike.j@company.com', avatar: 'MJ', role: 'approver' },
+        { id: '3', name: 'Emma Wilson', email: 'emma.w@company.com', avatar: 'EW', role: 'viewer' }
+      ];
+    }
+    return [];
+  };
 
-  const [walletBalance, setWalletBalance] = useState(1250.50);
+  const getInitialWalletBalance = (): number => {
+    return currentUser?.name === 'John Doe' ? 1250.50 : 0;
+  };
+
+  const getInitialTransactions = () => {
+    if (currentUser?.name === 'John Doe') {
+      return [
+        { id: '1', type: 'approved', description: 'Team building event', amount: -1500.00, date: '2024-11-24', status: 'completed' },
+        { id: '2', type: 'deposit', description: 'Added from Bank of America', amount: 2000.00, date: '2024-11-22', status: 'completed' },
+        { id: '3', type: 'approved', description: 'Office supplies', amount: -250.00, date: '2024-11-20', status: 'completed' },
+        { id: '4', type: 'withdraw', description: 'Instant withdrawal', amount: -500.00, date: '2024-11-18', status: 'completed', fee: 9.75 }
+      ];
+    }
+    return [];
+  };
+
+  const getInitialBankAccounts = () => {
+    if (currentUser?.name === 'John Doe') {
+      return [
+        { id: '1', name: 'Bank of America', accountNumber: '1234', status: 'Connected' }
+      ];
+    }
+    return [];
+  };
+
+  const getInitialFeedItems = (): FeedItem[] => {
+    if (currentUser?.name === 'John Doe') {
+      return [
+        {
+          id: '1',
+          type: 'approved',
+          requestId: '2',
+          user: 'Sarah Chen',
+          amount: 1500.00,
+          description: 'approved your request for Team building event',
+          timestamp: '2024-11-24T10:30:00',
+          status: 'approved'
+        },
+        {
+          id: '2',
+          type: 'submitted',
+          requestId: '3',
+          user: 'Alex Martinez',
+          amount: 450.00,
+          description: 'submitted a new request for Software licenses',
+          timestamp: '2024-11-24T09:15:00',
+          status: 'pending'
+        },
+        {
+          id: '3',
+          type: 'rejected',
+          requestId: '4',
+          user: 'Mike Johnson',
+          amount: 800.00,
+          description: 'rejected your request for Client dinner',
+          timestamp: '2024-11-23T16:45:00',
+          status: 'rejected'
+        },
+        {
+          id: '4',
+          type: 'submitted',
+          requestId: '1',
+          user: 'You',
+          amount: 250.00,
+          description: 'submitted a new request for Office supplies for Q4',
+          timestamp: '2024-11-23T14:20:00',
+          status: 'pending'
+        }
+      ];
+    }
+    return [];
+  };
+
+  const getInitialConversations = (): Conversation[] => {
+    if (currentUser?.name === 'John Doe') {
+      return [
+        {
+          id: '1',
+          participant: 'Sarah Chen',
+          lastMessage: 'Approved your team building request!',
+          timestamp: '2024-11-24T10:30:00',
+          unreadCount: 1,
+          avatar: 'SC'
+        },
+        {
+          id: '2',
+          participant: 'Mike Johnson',
+          lastMessage: 'Can you provide more details?',
+          timestamp: '2024-11-23T16:45:00',
+          unreadCount: 0,
+          avatar: 'MJ'
+        },
+        {
+          id: '3',
+          participant: 'Alex Martinez',
+          lastMessage: 'Thanks for approving!',
+          timestamp: '2024-11-22T11:20:00',
+          unreadCount: 0,
+          avatar: 'AM'
+        }
+      ];
+    }
+    return [];
+  };
+
+  const getInitialMessages = (): Message[] => {
+    if (currentUser?.name === 'John Doe') {
+      return [
+        {
+          id: '1',
+          conversationId: '1',
+          sender: 'Sarah Chen',
+          recipient: 'You',
+          text: 'Approved your team building request!',
+          timestamp: '2024-11-24T10:30:00',
+          read: false
+        },
+        {
+          id: '2',
+          conversationId: '1',
+          sender: 'You',
+          recipient: 'Sarah Chen',
+          text: 'Thank you for the quick approval!',
+          timestamp: '2024-11-24T10:25:00',
+          read: true
+        },
+        {
+          id: '3',
+          conversationId: '2',
+          sender: 'Mike Johnson',
+          recipient: 'You',
+          text: 'Can you provide more details?',
+          timestamp: '2024-11-23T16:45:00',
+          read: true,
+          requestId: '4'
+        },
+        {
+          id: '4',
+          conversationId: '2',
+          sender: 'You',
+          recipient: 'Mike Johnson',
+          text: 'Sure, I will send the itemized receipt',
+          timestamp: '2024-11-23T16:50:00',
+          read: true
+        }
+      ];
+    }
+    return [];
+  };
+
+  const getInitialNotifications = (): Notification[] => {
+    if (currentUser?.name === 'John Doe') {
+      return [
+        {
+          id: '1',
+          type: 'approval_request',
+          title: 'New Approval Request',
+          message: 'Alex Martinez sent a $450.00 request for Software licenses',
+          timestamp: '2024-11-22T09:15:00',
+          read: false,
+          requestId: '3'
+        },
+        {
+          id: '2',
+          type: 'request_reviewed',
+          title: 'Request Approved',
+          message: 'Sarah Chen approved your $1,500.00 request for Team building event',
+          timestamp: '2024-11-24T10:30:00',
+          read: false,
+          requestId: '2'
+        },
+        {
+          id: '3',
+          type: 'request_reviewed',
+          title: 'Request Rejected',
+          message: 'Mike Johnson rejected your $800.00 request for Client dinner',
+          timestamp: '2024-11-23T16:45:00',
+          read: true,
+          requestId: '4'
+        }
+      ];
+    }
+    return [];
+  };
+  
+  const [requests, setRequests] = useState<MoneyRequest[]>([]);
+  const [approvers, setApprovers] = useState<Approver[]>([]);
+  const [walletBalance, setWalletBalance] = useState(0);
   const [approvalThreshold, setApprovalThreshold] = useState(50);
+  const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [transactions, setTransactions] = useState<any[]>([]);
+  const [bankAccounts, setBankAccounts] = useState<any[]>([]);
 
-  const [feedItems, setFeedItems] = useState<FeedItem[]>([
-    {
-      id: '1',
-      type: 'approved',
-      requestId: '2',
-      user: 'Sarah Chen',
-      amount: 1500.00,
-      description: 'approved your request for Team building event',
-      timestamp: '2024-11-24T10:30:00',
-      status: 'approved'
-    },
-    {
-      id: '2',
-      type: 'submitted',
-      requestId: '3',
-      user: 'Alex Martinez',
-      amount: 450.00,
-      description: 'submitted a new request for Software licenses',
-      timestamp: '2024-11-24T09:15:00',
-      status: 'pending'
-    },
-    {
-      id: '3',
-      type: 'rejected',
-      requestId: '4',
-      user: 'Mike Johnson',
-      amount: 800.00,
-      description: 'rejected your request for Client dinner',
-      timestamp: '2024-11-23T16:45:00',
-      status: 'rejected'
-    },
-    {
-      id: '4',
-      type: 'submitted',
-      requestId: '1',
-      user: 'You',
-      amount: 250.00,
-      description: 'submitted a new request for Office supplies for Q4',
-      timestamp: '2024-11-23T14:20:00',
-      status: 'pending'
+  // Initialize data when user logs in
+  useEffect(() => {
+    if (currentUser) {
+      setRequests(getInitialRequests());
+      setApprovers(getInitialApprovers());
+      setWalletBalance(getInitialWalletBalance());
+      setFeedItems(getInitialFeedItems());
+      setConversations(getInitialConversations());
+      setMessages(getInitialMessages());
+      setNotifications(getInitialNotifications());
+      setTransactions(getInitialTransactions());
+      setBankAccounts(getInitialBankAccounts());
     }
-  ]);
+  }, [currentUser]);
 
-  const [conversations, setConversations] = useState<Conversation[]>([
-    {
-      id: '1',
-      participant: 'Sarah Chen',
-      lastMessage: 'Approved your team building request!',
-      timestamp: '2024-11-24T10:30:00',
-      unreadCount: 1,
-      avatar: 'SC'
-    },
-    {
-      id: '2',
-      participant: 'Mike Johnson',
-      lastMessage: 'Can you provide more details?',
-      timestamp: '2024-11-23T16:45:00',
-      unreadCount: 0,
-      avatar: 'MJ'
-    },
-    {
-      id: '3',
-      participant: 'Alex Martinez',
-      lastMessage: 'Thanks for approving!',
-      timestamp: '2024-11-22T11:20:00',
-      unreadCount: 0,
-      avatar: 'AM'
-    }
-  ]);
-
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      conversationId: '1',
-      sender: 'Sarah Chen',
-      recipient: 'You',
-      text: 'Approved your team building request!',
-      timestamp: '2024-11-24T10:30:00',
-      read: false
-    },
-    {
-      id: '2',
-      conversationId: '1',
-      sender: 'You',
-      recipient: 'Sarah Chen',
-      text: 'Thank you for the quick approval!',
-      timestamp: '2024-11-24T10:25:00',
-      read: true
-    },
-    {
-      id: '3',
-      conversationId: '2',
-      sender: 'Mike Johnson',
-      recipient: 'You',
-      text: 'Can you provide more details?',
-      timestamp: '2024-11-23T16:45:00',
-      read: true,
-      requestId: '4'
-    },
-    {
-      id: '4',
-      conversationId: '2',
-      sender: 'You',
-      recipient: 'Mike Johnson',
-      text: 'Sure, I will send the itemized receipt',
-      timestamp: '2024-11-23T16:50:00',
-      read: true
-    }
-  ]);
-
-  const [notifications, setNotifications] = useState<Notification[]>([
-    {
-      id: '1',
-      type: 'approval_request',
-      title: 'New Approval Request',
-      message: 'Alex Martinez sent a $450.00 request for Software licenses',
-      timestamp: '2024-11-22T09:15:00',
-      read: false,
-      requestId: '3'
-    },
-    {
-      id: '2',
-      type: 'request_reviewed',
-      title: 'Request Approved',
-      message: 'Sarah Chen approved your $1,500.00 request for Team building event',
-      timestamp: '2024-11-24T10:30:00',
-      read: false,
-      requestId: '2'
-    },
-    {
-      id: '3',
-      type: 'request_reviewed',
-      title: 'Request Rejected',
-      message: 'Mike Johnson rejected your $800.00 request for Client dinner',
-      timestamp: '2024-11-23T16:45:00',
-      read: true,
-      requestId: '4'
-    }
-  ]);
+  // Calculate accessible funds from approved requests submitted by the user
+  const accessibleFunds = requests
+    .filter(req => req.submittedBy === 'You' && req.status === 'approved')
+    .reduce((total, req) => total + req.amount, 0);
 
   const totalUnreadMessages = conversations.reduce((sum, conv) => sum + conv.unreadCount, 0);
   const unreadNotificationsCount = notifications.filter(n => !n.read).length;
@@ -456,6 +543,26 @@ export default function App() {
     ));
   }, []); // Empty dependency array since we're using functional setState
 
+  const handleLogout = async () => {
+    try {
+      await signOut();
+      // Clear all state
+      setIsLoggedIn(false);
+      setCurrentUser(null);
+      setRequests([]);
+      setApprovers([]);
+      setWalletBalance(0);
+      setFeedItems([]);
+      setConversations([]);
+      setMessages([]);
+      setNotifications([]);
+      setCurrentView('dashboard');
+      console.log('✅ Logged out successfully');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+  
   const renderView = () => {
     switch (currentView) {
       case 'dashboard':
@@ -478,6 +585,7 @@ export default function App() {
           }}
           capturedImage={capturedImage}
           onClearCapturedImage={() => setCapturedImage(null)}
+          currentUser={currentUser}
         />;
       case 'requests':
         return <MyRequests 
@@ -492,7 +600,7 @@ export default function App() {
           onNavigateBack={() => setCurrentView('dashboard')}
         />; 
       case 'feeds':
-        return <Feeds feedItems={feedItems} requests={requests} approvers={approvers} updateRequestStatus={updateRequestStatus} onNavigateToProfile={() => setCurrentView('profile')} />;
+        return <Feeds feedItems={feedItems} requests={requests} approvers={approvers} updateRequestStatus={updateRequestStatus} onNavigateToProfile={() => setCurrentView('profile')} currentUser={currentUser} />;
       case 'messages':
         return <Messages 
           conversations={conversations} 
@@ -503,7 +611,15 @@ export default function App() {
           markMessagesAsRead={markMessagesAsRead}
         />; 
       case 'wallet':
-        return <AccountabillsWallet balance={walletBalance} setBalance={setWalletBalance} onNavigateToProfile={() => setCurrentView('profile')} />;
+        return <AccountabillsWallet 
+          balance={walletBalance} 
+          setBalance={setWalletBalance} 
+          accessibleFunds={accessibleFunds} 
+          onNavigateToProfile={() => setCurrentView('profile')} 
+          transactions={transactions}
+          bankAccounts={bankAccounts}
+          currentUser={currentUser}
+        />; 
       case 'camera':
         return <CameraCapture onClose={() => setCurrentView('dashboard')} onCapture={(mediaUrl, isVideo) => {
           if (!isVideo) {
@@ -533,6 +649,8 @@ export default function App() {
           setApprovalThreshold={setApprovalThreshold}
           isDarkMode={isDarkMode}
           setIsDarkMode={setIsDarkMode}
+          onLogout={handleLogout}
+          currentUser={currentUser}
           onMessageApprover={(approverId) => {
             // Find the approver and navigate to messages
             const approver = approvers.find(a => a.id === approverId);
@@ -576,8 +694,27 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    const checkSession = async () => {
+      // Test backend connection
+      console.log('🔍 Testing backend connection...');
+      await testBackendConnection();
+      
+      // Check for existing session
+      const session = await getSession();
+      if (session) {
+        setIsLoggedIn(true);
+        setCurrentUser({ name: 'John Doe', email: 'john.doe@company.com' });
+      }
+    };
+    checkSession();
+  }, []);
+
   if (!isLoggedIn) {
-    return <LandingPage onLogin={() => setIsLoggedIn(true)} />;
+    return <LandingPage onLogin={(user) => {
+      setIsLoggedIn(true);
+      setCurrentUser(user);
+    }} />;
   }
 
   return (

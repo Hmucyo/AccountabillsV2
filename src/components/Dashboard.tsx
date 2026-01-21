@@ -17,9 +17,10 @@ interface DashboardProps {
   onNavigateToRequests?: (statusFilter?: RequestStatus) => void;
   capturedImage?: string | null;
   onClearCapturedImage?: () => void;
+  currentUser?: { name: string; email: string; } | null;
 }
 
-export function Dashboard({ requests, addRequest, approvers, walletBalance, onNavigateToProfile, onNavigateToMessages, onNavigateToNotifications, unreadNotificationsCount = 0, onNavigateToReview, onNavigateToRequests, capturedImage, onClearCapturedImage }: DashboardProps) {
+export function Dashboard({ requests, addRequest, approvers, walletBalance, onNavigateToProfile, onNavigateToMessages, onNavigateToNotifications, unreadNotificationsCount = 0, onNavigateToReview, onNavigateToRequests, capturedImage, onClearCapturedImage, currentUser }: DashboardProps) {
   const [showNewRequest, setShowNewRequest] = useState(false);
 
   // Auto-open modal when image is captured
@@ -28,6 +29,17 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
       setShowNewRequest(true);
     }
   }, [capturedImage]);
+
+  // Generate initials from user's name
+  const getUserInitials = () => {
+    if (!currentUser?.name) return 'U';
+    return currentUser.name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
 
   const myRequests = requests.filter(r => r.submittedBy === 'You');
   const pendingCount = myRequests.filter(r => r.status === 'pending').length;
@@ -66,7 +78,7 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
             onClick={onNavigateToProfile}
             className="w-10 h-10 bg-[#9E89FF] rounded-full flex items-center justify-center text-white shadow-md hover:bg-[#8B76F0] transition-colors"
           >
-            <span className="text-sm">JD</span>
+            <span className="text-sm">{getUserInitials()}</span>
           </button>
         </div>
       </div>
