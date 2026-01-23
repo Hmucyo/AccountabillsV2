@@ -1,7 +1,7 @@
-import { Mail, Shield, UserCircle, Plus, Users, Trash2, Settings, Upload, UserPlus, MessageCircle, Moon, Sun, ChevronDown, LogOut } from 'lucide-react';
+import { Mail, Shield, UserCircle, Plus, Users, Trash2, Settings, Upload, UserPlus, MessageCircle, Moon, Sun, ChevronDown, LogOut, Search, X } from 'lucide-react';
 import { Approver } from '../App';
 import { useState, useEffect } from 'react';
-import { checkContactUsers, sendInvitation } from '../utils/api';
+import { checkContactUsers, sendInvitation, searchUsers } from '../utils/api';
 
 interface ProfileProps {
   approvers: Approver[];
@@ -27,9 +27,9 @@ interface ContactWithStatus {
 
 export function Profile({ approvers, addApprover, removeApprover, approvalThreshold, setApprovalThreshold, isDarkMode, setIsDarkMode, onMessageApprover, onLogout, currentUser }: ProfileProps) {
   const [showAddApprover, setShowAddApprover] = useState(false);
-  const [newApproverName, setNewApproverName] = useState('');
-  const [newApproverEmail, setNewApproverEmail] = useState('');
-  const [newApproverRole, setNewApproverRole] = useState<'approver' | 'viewer'>('approver');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [showPartnersList, setShowPartnersList] = useState(false);
   const [contacts, setContacts] = useState<ContactWithStatus[]>([]);
@@ -79,6 +79,50 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
       avatar: initials,
       role: role
     });
+  };
+
+  const handleSearchUsers = async (query: string) => {
+    setSearchQuery(query);
+    
+    if (query.trim().length < 2) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      console.log('🔍 Searching for users:', query);
+      const response = await searchUsers(query);
+      setSearchResults(response.users || []);
+      console.log('✅ Found', response.users?.length || 0, 'users');
+    } catch (error) {
+      console.error('❌ Error searching users:', error);
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleAddSearchedUser = (user: any, role: 'approver' | 'viewer') => {
+    const initials = user.name
+      .split(' ')
+      .map((n: string) => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+
+    addApprover({
+      name: user.name,
+      email: user.email,
+      avatar: initials,
+      role: role
+    });
+
+    // Clear search
+    setSearchQuery('');
+    setSearchResults([]);
+    setShowAddApprover(false);
   };
 
   const handleAddApprover = (e: React.FormEvent) => {
@@ -256,45 +300,105 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
         
         {/* Add Approver Form */}
         {showAddApprover && (
-          <form onSubmit={handleAddApprover} className="bg-purple-50 dark:bg-gray-800 border border-purple-200 dark:border-purple-800 rounded-xl p-4 mb-4 space-y-3">
-            <input
-              type="text"
-              value={newApproverName}
-              onChange={(e) => setNewApproverName(e.target.value)}
-              placeholder="Partner name"
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E89FF] bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-            />
-            <input
-              type="email"
-              value={newApproverEmail}
-              onChange={(e) => setNewApproverEmail(e.target.value)}
-              placeholder="Partner email"
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E89FF] bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-            />
-            <select
-              value={newApproverRole}
-              onChange={(e) => setNewApproverRole(e.target.value as 'approver' | 'viewer')}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E89FF] bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-            >
-              <option value="approver">Approver - Can approve/reject requests</option>
-              <option value="viewer">Viewer - Can only view requests</option>
-            </select>
-            <div className="flex gap-2">
-              <button
-                type="submit"
-                className="flex-1 bg-[#9E89FF] text-white py-2 rounded-lg hover:bg-[#8B76F0] transition-colors"
-              >
-                Add Partner
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowAddApprover(false)}
-                className="flex-1 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
-              >
-                Cancel
-              </button>
+          <div className="bg-purple-50 dark:bg-gray-800 border border-purple-200 dark:border-purple-800 rounded-xl p-4 mb-4 space-y-3">
+            {/* Search Input */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => handleSearchUsers(e.target.value)}
+                placeholder="Search by name or email..."
+                className="w-full pl-10 pr-10 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E89FF] bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => {
+                    setSearchQuery('');
+                    setSearchResults([]);
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              )}
             </div>
-          </form>
+
+            {/* Search Results */}
+            {isSearching && (
+              <div className="text-center py-4 text-gray-600 dark:text-gray-400">
+                Searching...
+              </div>
+            )}
+
+            {!isSearching && searchQuery.length >= 2 && searchResults.length === 0 && (
+              <div className="text-center py-4 text-gray-600 dark:text-gray-400">
+                No users found matching "{searchQuery}"
+              </div>
+            )}
+
+            {searchResults.length > 0 && (
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {searchResults.map((user) => {
+                  const isAlreadyAdded = approvers.some(a => a.email === user.email);
+                  return (
+                    <div
+                      key={user.id}
+                      className={`bg-white dark:bg-gray-700 rounded-lg p-3 ${isAlreadyAdded ? 'opacity-50' : ''}`}
+                    >
+                      <div className="flex items-center gap-3 mb-2">
+                        <img
+                          src={user.avatar}
+                          alt={user.name}
+                          className="w-10 h-10 rounded-full"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-gray-900 dark:text-white font-medium truncate">{user.name}</p>
+                          <p className="text-gray-600 dark:text-gray-400 text-sm truncate">
+                            {user.username ? `@${user.username}` : user.email}
+                          </p>
+                        </div>
+                      </div>
+
+                      {isAlreadyAdded ? (
+                        <div className="text-center py-2 bg-gray-100 dark:bg-gray-600 rounded-lg text-gray-600 dark:text-gray-400 text-sm">
+                          Already Added
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleAddSearchedUser(user, 'approver')}
+                            className="flex-1 bg-[#9E89FF] text-white py-2 rounded-lg hover:bg-[#8B76F0] transition-colors text-sm"
+                          >
+                            Add as Approver
+                          </button>
+                          <button
+                            onClick={() => handleAddSearchedUser(user, 'viewer')}
+                            className="flex-1 bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 text-gray-700 dark:text-gray-300 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-500 transition-colors text-sm"
+                          >
+                            Add as Viewer
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Cancel Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setShowAddApprover(false);
+                setSearchQuery('');
+                setSearchResults([]);
+              }}
+              className="w-full bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
         )}
         
         <div className="space-y-3">

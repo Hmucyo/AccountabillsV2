@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Wallet, Shield, Users, ArrowRight, Eye, EyeOff, Mail } from 'lucide-react';
-import { signUp, signIn } from '../utils/api';
+import { LogIn, Mail, Lock, User as UserIcon, AtSign } from 'lucide-react';
+import { signUp, signIn, getProfile, checkUsernameAvailable } from '../utils/api';
 
 interface LandingPageProps {
   onLogin: (user: { name: string; email: string }) => void;
@@ -33,12 +33,56 @@ export function LandingPage({ onLogin }: LandingPageProps) {
   const [resetEmailSent, setResetEmailSent] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [usernameError, setUsernameError] = useState('');
+  const [checkingUsername, setCheckingUsername] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
+    username: '',
     email: '',
     phone: '',
     password: ''
   });
+
+  // Username validation function
+  const validateUsername = async (username: string) => {
+    setCheckingUsername(true);
+    setUsernameError('');
+
+    // Check format (alphanumeric and underscore only, 3-20 characters)
+    const usernameRegex = /^[a-zA-Z0-9_]{3,20}$/;
+    if (!usernameRegex.test(username)) {
+      setUsernameError('Username must be 3-20 characters (letters, numbers, underscore only)');
+      setCheckingUsername(false);
+      return;
+    }
+
+    try {
+      const result = await checkUsernameAvailable(username);
+      if (!result.available) {
+        setUsernameError('This username is already taken');
+      }
+    } catch (error) {
+      console.error('Error checking username:', error);
+      // Don't block signup if check fails
+    } finally {
+      setCheckingUsername(false);
+    }
+  };
+
+  // Handle username input with debounced validation
+  const handleUsernameChange = (username: string) => {
+    setFormData({ ...formData, username });
+    setUsernameError('');
+    
+    // Only validate if username is not empty
+    if (username.trim().length > 0) {
+      // Debounce the validation
+      const timeoutId = setTimeout(() => {
+        validateUsername(username);
+      }, 500);
+      return () => clearTimeout(timeoutId);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,64 +91,94 @@ export function LandingPage({ onLogin }: LandingPageProps) {
 
     try {
       if (isSignUp) {
-        // Sign up with backend
+        // Validate username before signup
+        if (usernameError) {
+          setError('Please fix the username error before continuing');
+          setLoading(false);
+          return;
+        }
+
+        // Sign up with Supabase Auth
         console.log('🔵 Starting signup process...');
-        const signUpResponse = await signUp(formData.email, formData.password, formData.name);
+        const signUpResponse = await signUp(formData.email, formData.password, formData.name, formData.username);
         
-        // Check if we need to sign in
-        if (signUpResponse.requiresSignIn) {
+        console.log('📦 Signup response:', {
+          hasSession: !!signUpResponse.session,
+          hasAccessToken: !!signUpResponse.accessToken,
+          requiresSignIn: signUpResponse.requiresSignIn
+        });
+        
+        // If we got an access token directly from signup
+        if (signUpResponse.accessToken) {
+          console.log('✅ Signup successful with immediate access token');
+          
+          // The backend profile should already be created by signUp()
+          // But let's verify by fetching it
+          try {
+            console.log('🔵 Verifying user profile...');
+            const { profile } = await getProfile();
+            console.log('✅ Profile ready:', profile.name);
+            onLogin({ name: profile.name, email: profile.email });
+          } catch (profileError: any) {
+            console.log('⚠️ Profile not found, using signup data');
+            // Use the signup data if profile fetch fails
+            onLogin({ name: formData.name, email: formData.email });
+          }
+        } 
+        // If signup requires sign in
+        else if (signUpResponse.requiresSignIn) {
           console.log('✅ Signup successful, now signing in...');
           
-          // Add a small delay to ensure user is fully registered in Supabase
-          await new Promise(resolve => setTimeout(resolve, 500));
+          // Sign in to get session
+          await signIn(formData.email, formData.password);
           
-          try {
-            const { user } = await signIn(formData.email, formData.password);
-            const userName = user?.user_metadata?.name || formData.name;
-            const userEmail = user?.email || formData.email;
-            console.log('✅ Sign in successful:', userName);
-            onLogin({ name: userName, email: userEmail });
-          } catch (signInError: any) {
-            console.error('❌ Sign in error after signup:', signInError);
-            
-            // If sign in fails, wait a bit longer and try one more time
-            console.log('🔄 Retrying sign in after delay...');
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            try {
-              const { user } = await signIn(formData.email, formData.password);
-              const userName = user?.user_metadata?.name || formData.name;
-              const userEmail = user?.email || formData.email;
-              console.log('✅ Sign in successful on retry:', userName);
-              onLogin({ name: userName, email: userEmail });
-            } catch (retryError: any) {
-              console.error('❌ Sign in failed on retry:', retryError);
-              throw new Error('Account created but sign in failed. Please try signing in manually.');
-            }
-          }
+          // Fetch user profile from backend
+          console.log('🔵 Fetching user profile...');
+          const { profile } = await getProfile();
+          
+          console.log('✅ Sign in successful:', profile.name);
+          onLogin({ name: profile.name, email: profile.email });
         } else {
-          // Session was returned from signup directly (shouldn't happen with current backend)
-          const userName = signUpResponse.user?.user_metadata?.name || formData.name;
-          const userEmail = signUpResponse.user?.email || formData.email;
-          onLogin({ name: userName, email: userEmail });
+          throw new Error('Unexpected signup response');
         }
       } else {
         // Sign in
         console.log('🔵 Signing in...');
-        const { user } = await signIn(formData.email, formData.password);
-        const userName = user?.user_metadata?.name || 'User';
-        const userEmail = user?.email || '';
-        console.log('✅ Sign in successful:', userName);
-        onLogin({ name: userName, email: userEmail });
+        const signInResult = await signIn(formData.email, formData.password);
+        
+        // Verify token is available
+        if (!signInResult.accessToken) {
+          throw new Error('Failed to obtain access token');
+        }
+        
+        console.log('✅ Token verified:', signInResult.accessToken.substring(0, 20) + '...');
+        
+        // Fetch user profile from backend
+        console.log('🔵 Fetching user profile...');
+        const { profile } = await getProfile();
+        
+        console.log('✅ Sign in successful:', profile.name);
+        onLogin({ name: profile.name, email: profile.email });
       }
     } catch (err: any) {
       console.error('Auth error:', err);
       
       // Check if it's a network/server error
       if (err.message?.includes('fetch') || err.message?.includes('NetworkError') || err.message?.includes('Failed to fetch')) {
-        setError('Backend server is not responding. The server may need to be deployed. Check the console for details.');
-      } else {
-        setError(err.message || 'Authentication failed. Please try again.');
+        setError('Unable to connect to server. Please check your connection and try again.');
+      } 
+      // Check if it's invalid credentials
+      else if (err.message?.includes('Invalid login credentials') || err.message?.includes('Invalid') || err.message?.includes('credentials')) {
+        setError('Invalid email or password. Try signing up or use demo: john.doe@email.com / test1');
+      }
+      // Check if email already exists during signup
+      else if (err.message?.includes('already registered') || err.message?.includes('already been registered')) {
+        setError('This email is already registered. Please sign in instead.');
+        setIsSignUp(false); // Switch to sign in mode
+      }
+      // Default error
+      else {
+        setError(err.message || 'Failed to authenticate. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -196,7 +270,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
           {/* Logo */}
           <div className="mb-8">
             <div className="w-24 h-24 bg-white rounded-3xl flex items-center justify-center shadow-2xl mb-4">
-              <Wallet className="w-12 h-12 text-[#9E89FF]" />
+              <UserIcon className="w-12 h-12 text-[#9E89FF]" />
             </div>
             <h1 className="text-center text-white">ACCOUNTABILLS</h1>
             <p className="text-center text-purple-100 mt-2">Smart spending with accountability</p>
@@ -206,7 +280,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
           <div className="w-full max-w-md space-y-4 mb-12">
             <div className="bg-white bg-opacity-20 backdrop-blur-lg rounded-2xl p-4 flex items-center gap-4">
               <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center">
-                <Users className="w-6 h-6 text-[#9E89FF]" />
+                <UserIcon className="w-6 h-6 text-[#9E89FF]" />
               </div>
               <div>
                 <p className="text-white">Accountability Partners</p>
@@ -216,7 +290,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
 
             <div className="bg-white bg-opacity-20 backdrop-blur-lg rounded-2xl p-4 flex items-center gap-4">
               <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center">
-                <Shield className="w-6 h-6 text-[#9E89FF]" />
+                <Lock className="w-6 h-6 text-[#9E89FF]" />
               </div>
               <div>
                 <p className="text-white">Secure Wallet</p>
@@ -226,7 +300,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
 
             <div className="bg-white bg-opacity-20 backdrop-blur-lg rounded-2xl p-4 flex items-center gap-4">
               <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center">
-                <Wallet className="w-6 h-6 text-[#9E89FF]" />
+                <UserIcon className="w-6 h-6 text-[#9E89FF]" />
               </div>
               <div>
                 <p className="text-white">Smart Spending</p>
@@ -245,7 +319,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
               className="w-full bg-white text-[#9E89FF] py-4 rounded-full hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
             >
               <span>Get Started</span>
-              <ArrowRight className="w-5 h-5" />
+              <LogIn className="w-5 h-5" />
             </button>
             <button
               onClick={() => {
@@ -295,6 +369,31 @@ export function LandingPage({ onLogin }: LandingPageProps) {
                     className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF] text-gray-900 placeholder-gray-500"
                     required
                   />
+                </div>
+
+                <div>
+                  <label className="block text-gray-700 mb-2">Username</label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={formData.username}
+                      onChange={(e) => handleUsernameChange(e.target.value)}
+                      placeholder="Enter a username"
+                      className={`w-full px-4 py-3 border ${usernameError ? 'border-red-500' : 'border-gray-300'} rounded-xl focus:outline-none focus:ring-2 focus:ring-[#9E89FF] text-gray-900 placeholder-gray-500`}
+                      required
+                    />
+                    {checkingUsername && (
+                      <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                        <div className="animate-spin h-5 w-5 border-2 border-[#9E89FF] border-t-transparent rounded-full"></div>
+                      </div>
+                    )}
+                  </div>
+                  {usernameError && (
+                    <p className="text-red-600 text-sm mt-1">{usernameError}</p>
+                  )}
+                  {!usernameError && formData.username.length >= 3 && !checkingUsername && (
+                    <p className="text-green-600 text-sm mt-1">✓ Username is available</p>
+                  )}
                 </div>
 
                 <div>
@@ -353,7 +452,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500"
                 >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  {showPassword ? <Lock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
                 </button>
               </div>
               {!isSignUp && (

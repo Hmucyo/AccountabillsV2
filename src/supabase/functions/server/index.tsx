@@ -12,49 +12,98 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 );
 
+// Create a separate Supabase client for validating user JWTs
+const supabaseAuth = createClient(
+  Deno.env.get('SUPABASE_URL')!,
+  Deno.env.get('SUPABASE_ANON_KEY')!
+);
+
 // Initialize demo user (John Doe) on server startup
 const initializeDemoUser = async () => {
   try {
-    const demoEmail = 'john.doe@email.com';
-    const demoPassword = 'test1';
-    const demoName = 'John Doe';
-    
-    console.log('🔍 Checking if demo user exists...');
-    
-    // Try to create the user - if they exist, we'll catch the error
-    const { data, error } = await supabase.auth.admin.createUser({
-      email: demoEmail,
-      password: demoPassword,
-      user_metadata: { name: demoName },
-      email_confirm: true
-    });
-    
-    if (error) {
-      // If user already exists, that's fine
-      if (error.message?.includes('already been registered') || error.code === 'email_exists') {
-        console.log('✅ Demo user already exists');
-        return;
-      }
-      // For other errors, log but don't crash the server
-      console.error('⚠️ Could not create demo user (non-critical):', error.message);
-      return;
-    }
-    
-    console.log('✅ Demo user created successfully!');
-    
-    // Initialize demo user profile
-    try {
-      await kv.set(`user:${data.user.id}:profile`, {
-        name: demoName,
-        email: demoEmail,
-        createdAt: new Date().toISOString(),
+    console.log('🚀 Starting demo user initialization...');
+    const demoUsers = [
+      {
+        email: 'john.doe@email.com',
+        password: 'test1',
+        name: 'John Doe',
         walletBalance: 1250.50,
         approvalThreshold: 50
+      },
+      {
+        email: 'sarah.johnson@email.com',
+        password: 'test2',
+        name: 'Sarah Johnson',
+        walletBalance: 500.00,
+        approvalThreshold: 100
+      }
+    ];
+    
+    for (const demoUser of demoUsers) {
+      console.log(`🔍 Checking if demo user ${demoUser.name} exists...`);
+      
+      // Check if user already exists
+      const { data: existingUsers, error: listError } = await supabase.auth.admin.listUsers();
+      
+      if (listError) {
+        console.error(`⚠️ Error listing users:`, listError.message);
+        continue;
+      }
+      
+      const existingUser = existingUsers?.users?.find(u => u.email === demoUser.email);
+      
+      if (existingUser) {
+        console.log(`✅ Demo user ${demoUser.name} already exists with ID:`, existingUser.id);
+        
+        // Ensure profile exists in KV store
+        const existingProfile = await kv.get(`user:${existingUser.id}:profile`);
+        if (!existingProfile) {
+          console.log(`🔧 Creating missing profile for ${demoUser.name}`);
+          await kv.set(`user:${existingUser.id}:profile`, {
+            name: demoUser.name,
+            email: demoUser.email,
+            createdAt: new Date().toISOString(),
+            walletBalance: demoUser.walletBalance,
+            approvalThreshold: demoUser.approvalThreshold
+          });
+          console.log(`✅ Profile created for ${demoUser.name}`);
+        }
+        continue;
+      }
+      
+      // Try to create the user
+      console.log(`🔧 Creating new user ${demoUser.name}...`);
+      const { data, error } = await supabase.auth.admin.createUser({
+        email: demoUser.email,
+        password: demoUser.password,
+        user_metadata: { name: demoUser.name },
+        email_confirm: true
       });
-      console.log('✅ Demo user profile initialized');
-    } catch (kvError: any) {
-      console.error('⚠️ Could not initialize demo user profile:', kvError.message);
+      
+      if (error) {
+        // For any errors, log but don't crash the server
+        console.error(`⚠️ Could not create demo user ${demoUser.name} (non-critical):`, error.message);
+        continue;
+      }
+      
+      console.log(`✅ Demo user ${demoUser.name} created successfully with ID:`, data.user.id);
+      
+      // Initialize demo user profile
+      try {
+        await kv.set(`user:${data.user.id}:profile`, {
+          name: demoUser.name,
+          email: demoUser.email,
+          createdAt: new Date().toISOString(),
+          walletBalance: demoUser.walletBalance,
+          approvalThreshold: demoUser.approvalThreshold
+        });
+        console.log(`✅ Demo user ${demoUser.name} profile initialized`);
+      } catch (kvError: any) {
+        console.error(`⚠️ Could not initialize demo user ${demoUser.name} profile:`, kvError.message);
+      }
     }
+    
+    console.log('✅ Demo user initialization complete!');
   } catch (error: any) {
     console.error('⚠️ Error in demo user initialization (non-critical):', error.message);
   }
@@ -82,17 +131,30 @@ app.use(
 
 // Middleware to verify authentication
 const requireAuth = async (c: any, next: any) => {
-  const accessToken = c.req.header('Authorization')?.split(' ')[1];
+  const authHeader = c.req.header('Authorization');
+  console.log('🔍 Auth header:', authHeader ? `Bearer ${authHeader.substring(7, 27)}...` : 'missing');
+  
+  const accessToken = authHeader?.split(' ')[1];
   if (!accessToken) {
-    return c.json({ error: 'Unauthorized - No token provided' }, 401);
+    console.log('❌ Missing authorization header');
+    return c.json({ code: 401, message: 'Missing authorization header' }, 401);
   }
 
+  console.log('🔍 Validating JWT token...');
+  // Use service role client to verify the JWT
   const { data: { user }, error } = await supabase.auth.getUser(accessToken);
-  if (error || !user?.id) {
-    console.log('Authentication error:', error);
-    return c.json({ error: 'Unauthorized - Invalid token' }, 401);
+  
+  if (error) {
+    console.log('❌ JWT validation error:', error.message, error);
+    return c.json({ code: 401, message: 'Invalid JWT', details: error.message }, 401);
+  }
+  
+  if (!user?.id) {
+    console.log('❌ No user found in JWT');
+    return c.json({ code: 401, message: 'Invalid JWT' }, 401);
   }
 
+  console.log('✅ User authenticated:', user.email, 'userId:', user.id);
   c.set('userId', user.id);
   c.set('userEmail', user.email);
   await next();
@@ -103,60 +165,181 @@ app.get("/make-server-1b96e1b7/health", (c) => {
   return c.json({ status: "ok" });
 });
 
+// Manual initialization endpoint for demo users
+app.post("/make-server-1b96e1b7/init-demo-users", async (c) => {
+  console.log('🔧 Manual demo user initialization triggered...');
+  await initializeDemoUser();
+  return c.json({ status: "Demo users initialized", message: "You can now sign in with john.doe@email.com/test1 or sarah.johnson@email.com/test2" });
+});
+
 // ===== AUTH ENDPOINTS =====
 
-// Sign up endpoint
-app.post("/make-server-1b96e1b7/auth/signup", async (c) => {
+// Create user endpoint (admin API with auto-confirmed email)
+app.post("/make-server-1b96e1b7/auth/create-user", async (c) => {
   try {
-    const { email, password, name } = await c.req.json();
-
-    console.log('Signup request received for email:', email, 'name:', name);
-
+    const { email, password, name, username } = await c.req.json();
+    
     if (!email || !password || !name) {
-      console.log('Missing required fields');
       return c.json({ error: 'Email, password, and name are required' }, 400);
     }
 
-    console.log('Creating user with Supabase Auth...');
+    console.log('🔵 Creating new user:', email, 'username:', username);
+
+    // Check if username is already taken (if provided)
+    if (username) {
+      const allProfiles = await kv.getByPrefix('user:');
+      const usernameTaken = allProfiles.some((profile: any) => 
+        profile.username?.toLowerCase() === username.toLowerCase()
+      );
+
+      if (usernameTaken) {
+        return c.json({ error: 'Username is already taken' }, 400);
+      }
+    }
+
+    // Check if user already exists
+    const { data: existingUsers, error: listError } = await supabase.auth.admin.listUsers();
+    
+    if (listError) {
+      console.error('⚠️ Error listing users:', listError.message);
+      return c.json({ error: 'Failed to check existing users' }, 500);
+    }
+    
+    const existingUser = existingUsers?.users?.find(u => u.email === email);
+    
+    if (existingUser) {
+      return c.json({ error: 'User with this email already exists' }, 400);
+    }
+
+    // Create user with admin API (auto-confirms email)
     const { data, error } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      user_metadata: { name },
+      email: email,
+      password: password,
+      user_metadata: { name: name },
       // Automatically confirm the user's email since an email server hasn't been configured.
       email_confirm: true
     });
 
     if (error) {
-      console.log('Supabase Auth error:', error.message, error);
-      return c.json({ error: error.message }, 400);
+      console.error('❌ Error creating user:', error.message);
+      return c.json({ error: error.message || 'Failed to create user' }, 500);
     }
 
-    console.log('User created successfully, userId:', data.user.id);
+    console.log('✅ User created successfully:', data.user.id);
 
-    // Initialize user data
-    const userId = data.user.id;
-    await kv.set(`user:${userId}:profile`, {
-      name,
-      email,
+    // Create user profile in KV store
+    const profile = {
+      name: name,
+      email: email,
+      username: username,
       createdAt: new Date().toISOString(),
       walletBalance: 0,
       approvalThreshold: 50
-    });
+    };
 
-    console.log('User profile initialized in KV store');
+    await kv.set(`user:${data.user.id}:profile`, profile);
+    
+    // Create username lookup index for faster searches
+    if (username) {
+      await kv.set(`username:${username.toLowerCase()}`, data.user.id);
+    }
+    
+    console.log('✅ Profile created for user:', data.user.id, 'with username:', username);
 
-    // Return user data - the frontend will handle signing in via Supabase client
-    // The user is now created and can sign in with their email/password
-    console.log('✅ User created successfully, ready to sign in');
-
-    return c.json({ 
-      user: data.user,
-      message: 'User created and ready to sign in',
-      requiresSignIn: true
+    return c.json({
+      message: 'User created successfully',
+      userId: data.user.id,
+      profile
     });
   } catch (error: any) {
-    console.log('Signup exception:', error.message, error);
+    console.error('❌ Create user error:', error);
     return c.json({ error: error.message || 'Failed to create user' }, 500);
+  }
+});
+
+// Check if username is available
+app.post("/make-server-1b96e1b7/auth/check-username", async (c) => {
+  try {
+    const { username } = await c.req.json();
+    
+    if (!username) {
+      return c.json({ error: 'Username is required' }, 400);
+    }
+
+    console.log('🔍 Checking if username is available:', username);
+
+    // Get all profiles and check if username exists
+    const allProfiles = await kv.getByPrefix('user:');
+    const usernameTaken = allProfiles.some((profile: any) => 
+      profile.username?.toLowerCase() === username.toLowerCase()
+    );
+
+    console.log('✅ Username check result:', !usernameTaken);
+
+    return c.json({ available: !usernameTaken });
+  } catch (error: any) {
+    console.error('❌ Check username error:', error);
+    return c.json({ error: error.message || 'Failed to check username' }, 500);
+  }
+});
+
+// Sign up endpoint - creates user profile when they sign up via frontend
+app.post("/make-server-1b96e1b7/auth/signup", requireAuth, async (c) => {
+  try {
+    const userId = c.get('userId');
+    const userEmail = c.get('userEmail');
+    const { email, name, username } = await c.req.json();
+
+    console.log('📝 Creating profile for authenticated user:', userId, email || userEmail, name, username);
+
+    // Check if profile already exists
+    const existingProfile = await kv.get(`user:${userId}:profile`);
+    if (existingProfile) {
+      console.log('✅ Profile already exists');
+      return c.json({ 
+        message: 'Profile already exists',
+        profile: existingProfile
+      });
+    }
+
+    // Check if username is already taken
+    if (username) {
+      const allProfiles = await kv.getByPrefix('user:');
+      const usernameTaken = allProfiles.some((profile: any) => 
+        profile.username?.toLowerCase() === username.toLowerCase()
+      );
+
+      if (usernameTaken) {
+        return c.json({ error: 'Username is already taken' }, 400);
+      }
+    }
+
+    // Create user profile in KV store
+    const profile = {
+      name: name,
+      email: email || userEmail,
+      username: username,
+      createdAt: new Date().toISOString(),
+      walletBalance: 0,
+      approvalThreshold: 50
+    };
+
+    await kv.set(`user:${userId}:profile`, profile);
+    
+    // Also create a username lookup index for faster searches
+    if (username) {
+      await kv.set(`username:${username.toLowerCase()}`, userId);
+    }
+    
+    console.log('✅ Profile created for user:', userId, 'with username:', username);
+
+    return c.json({
+      message: 'User profile created successfully',
+      profile
+    });
+  } catch (error: any) {
+    console.error('❌ Signup error:', error);
+    return c.json({ error: error.message || 'Failed to create profile' }, 500);
   }
 });
 
@@ -166,16 +349,35 @@ app.post("/make-server-1b96e1b7/auth/signup", async (c) => {
 app.get("/make-server-1b96e1b7/profile", requireAuth, async (c) => {
   try {
     const userId = c.get('userId');
-    const profile = await kv.get(`user:${userId}:profile`);
+    const userEmail = c.get('userEmail');
+    console.log('📋 Fetching profile for user:', userId, userEmail);
     
+    let profile = await kv.get(`user:${userId}:profile`);
+    
+    // If profile doesn't exist, create a default one
     if (!profile) {
-      return c.json({ error: 'Profile not found' }, 404);
+      console.log('⚠️ Profile not found, creating default profile...');
+      
+      // Try to get name from Supabase Auth metadata
+      const { data: { user }, error } = await supabase.auth.admin.getUserById(userId);
+      const userName = user?.user_metadata?.name || userEmail?.split('@')[0] || 'User';
+      
+      profile = {
+        name: userName,
+        email: userEmail,
+        createdAt: new Date().toISOString(),
+        walletBalance: 0,
+        approvalThreshold: 50
+      };
+      
+      await kv.set(`user:${userId}:profile`, profile);
+      console.log('✅ Default profile created:', userName);
     }
 
     return c.json({ profile });
-  } catch (error) {
-    console.log('Get profile error:', error);
-    return c.json({ error: 'Failed to fetch profile' }, 500);
+  } catch (error: any) {
+    console.error('❌ Get profile error:', error);
+    return c.json({ error: 'Failed to fetch profile', details: error.message }, 500);
   }
 });
 
@@ -497,6 +699,53 @@ app.delete("/make-server-1b96e1b7/partners/:id", requireAuth, async (c) => {
   } catch (error) {
     console.log('Remove partner error:', error);
     return c.json({ error: 'Failed to remove partner' }, 500);
+  }
+});
+
+// Search for users by name or email
+app.post("/make-server-1b96e1b7/users/search", requireAuth, async (c) => {
+  try {
+    const userId = c.get('userId');
+    const { query } = await c.req.json();
+    
+    if (!query || query.trim().length < 2) {
+      return c.json({ error: 'Search query must be at least 2 characters' }, 400);
+    }
+
+    const searchTerm = query.toLowerCase().trim();
+    
+    // Get all user profiles from the database
+    const allProfiles = await kv.getByPrefix('user:');
+    
+    // Filter profiles that match the search query (by name, email, or username)
+    // and exclude the current user
+    const matchedUsers = allProfiles
+      .filter((profile: any) => {
+        // Only include actual profile objects (not partners, requests, etc.)
+        if (!profile.name || !profile.email) return false;
+        
+        // Exclude current user from results
+        if (profile.email === c.get('userEmail')) return false;
+        
+        const name = profile.name.toLowerCase();
+        const email = profile.email.toLowerCase();
+        const username = (profile.username || '').toLowerCase();
+        
+        return name.includes(searchTerm) || email.includes(searchTerm) || username.includes(searchTerm);
+      })
+      .map((profile: any) => ({
+        id: profile.email, // Use email as unique identifier
+        name: profile.name,
+        email: profile.email,
+        username: profile.username,
+        avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.name)}&background=9E89FF&color=fff`
+      }))
+      .slice(0, 10); // Limit to 10 results
+
+    return c.json({ users: matchedUsers });
+  } catch (error) {
+    console.log('Search users error:', error);
+    return c.json({ error: 'Failed to search users' }, 500);
   }
 });
 

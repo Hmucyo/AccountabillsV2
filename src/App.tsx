@@ -11,7 +11,7 @@ import { AccountabillsWallet } from './components/AccountabillsWallet';
 import { CameraCapture } from './components/CameraCapture';
 import { ReviewRequest } from './components/ReviewRequest';
 import { Notifications } from './components/Notifications';
-import { getSession, signOut } from './utils/api';
+import { getSession, signOut, getPartners, addPartner, removePartner, getMyRequests, getWalletBalance, getTransactions, getConversations, getNotifications, getFeed, getProfile } from './utils/api';
 import { testBackendConnection } from './utils/testBackend';
 
 export type RequestStatus = 'pending' | 'approved' | 'rejected';
@@ -101,6 +101,51 @@ export default function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [isDarkMode]);
+  
+  // Initialize data when user logs in
+  useEffect(() => {
+    if (currentUser) {
+      // Load data from backend
+      loadUserData();
+    }
+  }, [currentUser]);
+
+  const loadUserData = async () => {
+    try {
+      // Load partners
+      const partnersData = await getPartners();
+      setApprovers(partnersData.partners || []);
+
+      // Load requests
+      const requestsData = await getMyRequests();
+      setRequests(requestsData.requests || []);
+
+      // Load wallet balance
+      const balanceData = await getWalletBalance();
+      setWalletBalance(balanceData.balance || 0);
+
+      // Load transactions
+      const transactionsData = await getTransactions();
+      setTransactions(transactionsData.transactions || []);
+
+      // Load conversations
+      const conversationsData = await getConversations();
+      setConversations(conversationsData.conversations || []);
+
+      // Load notifications
+      const notificationsData = await getNotifications();
+      setNotifications(notificationsData.notifications || []);
+
+      // Load feed
+      const feedData = await getFeed();
+      setFeedItems(feedData.feed || []);
+
+      // Set bank accounts (still using initial function since not in backend yet)
+      setBankAccounts(getInitialBankAccounts());
+    } catch (error) {
+      console.error('Error loading user data:', error);
+    }
+  };
   
   // Demo data for John Doe only
   const getInitialRequests = (): MoneyRequest[] => {
@@ -365,21 +410,6 @@ export default function App() {
   const [transactions, setTransactions] = useState<any[]>([]);
   const [bankAccounts, setBankAccounts] = useState<any[]>([]);
 
-  // Initialize data when user logs in
-  useEffect(() => {
-    if (currentUser) {
-      setRequests(getInitialRequests());
-      setApprovers(getInitialApprovers());
-      setWalletBalance(getInitialWalletBalance());
-      setFeedItems(getInitialFeedItems());
-      setConversations(getInitialConversations());
-      setMessages(getInitialMessages());
-      setNotifications(getInitialNotifications());
-      setTransactions(getInitialTransactions());
-      setBankAccounts(getInitialBankAccounts());
-    }
-  }, [currentUser]);
-
   // Calculate accessible funds from approved requests submitted by the user
   const accessibleFunds = requests
     .filter(req => req.submittedBy === 'You' && req.status === 'approved')
@@ -493,28 +523,52 @@ export default function App() {
     ));
   };
 
-  const addApprover = (approver: Omit<Approver, 'id'>) => {
-    const newApprover = {
-      ...approver,
-      id: Date.now().toString()
-    };
-    setApprovers([...approvers, newApprover]);
-    
-    // Create notification for friend request (simulating that the approver sent a request)
-    const notification: Notification = {
-      id: Date.now().toString() + '-notif-friend',
-      type: 'friend_request',
-      title: 'New Accountability Partner',
-      message: `${newApprover.name} was added as an accountability partner`,
-      timestamp: new Date().toISOString(),
-      read: false,
-      approverId: newApprover.id
-    };
-    setNotifications(prev => [notification, ...prev]);
+  const addApprover = async (approver: Omit<Approver, 'id'>) => {
+    try {
+      // Call backend API to add partner
+      const response = await addPartner({
+        name: approver.name,
+        email: approver.email,
+        avatar: approver.avatar,
+        role: approver.role
+      });
+      
+      // Add to local state with the ID from backend
+      const newApprover = response.partner;
+      setApprovers([...approvers, newApprover]);
+      
+      // Create notification for friend request
+      const notification: Notification = {
+        id: Date.now().toString() + '-notif-friend',
+        type: 'friend_request',
+        title: 'New Accountability Partner',
+        message: `${newApprover.name} was added as an accountability partner`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        approverId: newApprover.id
+      };
+      setNotifications(prev => [notification, ...prev]);
+      
+      console.log('✅ Partner added successfully:', newApprover);
+    } catch (error) {
+      console.error('❌ Failed to add partner:', error);
+      throw error; // Propagate error so UI can handle it
+    }
   };
 
-  const removeApprover = (id: string) => {
-    setApprovers(approvers.filter(a => a.id !== id));
+  const removeApprover = async (id: string) => {
+    try {
+      // Call backend API to remove partner
+      await removePartner(id);
+      
+      // Remove from local state
+      setApprovers(approvers.filter(a => a.id !== id));
+      
+      console.log('✅ Partner removed successfully');
+    } catch (error) {
+      console.error('❌ Failed to remove partner:', error);
+      throw error;
+    }
   };
   
   const markNotificationAsRead = (id: string) => {
@@ -702,16 +756,37 @@ export default function App() {
       
       // Check for existing session
       const session = await getSession();
-      if (session) {
-        setIsLoggedIn(true);
-        setCurrentUser({ name: 'John Doe', email: 'john.doe@company.com' });
+      if (session?.access_token) {
+        console.log('✅ Session found with access token');
+        
+        try {
+          // Get user profile from backend
+          console.log('🔵 Fetching user profile...');
+          const { profile } = await getProfile();
+          
+          setIsLoggedIn(true);
+          setCurrentUser({ 
+            name: profile.name, 
+            email: profile.email 
+          });
+          
+          console.log('✅ User logged in:', profile.name);
+        } catch (error) {
+          console.error('❌ Failed to fetch profile:', error);
+          // Session might be invalid, clear it
+          console.log('🔄 Clearing invalid session...');
+          await signOut();
+        }
+      } else {
+        console.log('ℹ️ No active session found');
       }
     };
     checkSession();
   }, []);
 
   if (!isLoggedIn) {
-    return <LandingPage onLogin={(user) => {
+    return <LandingPage onLogin={async (user) => {
+      console.log('✅ Login callback received for:', user.name);
       setIsLoggedIn(true);
       setCurrentUser(user);
     }} />;
