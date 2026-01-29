@@ -120,7 +120,7 @@ export const signUp = async (email: string, password: string, name: string, user
     // Store the token
     if (data.session?.access_token) {
       accessToken = data.session.access_token;
-      console.log('✅ Access token set:', accessToken.substring(0, 20) + '...');
+      console.log('✅ Access token set from signup:', accessToken.substring(0, 20) + '...');
       
       return { 
         user: data.user, 

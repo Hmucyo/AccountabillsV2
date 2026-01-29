@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { LogIn, Mail, Lock, User as UserIcon, AtSign } from 'lucide-react';
-import { signUp, signIn, getProfile, checkUsernameAvailable } from '../utils/api';
+import { signUp, signIn, getProfile, checkUsernameAvailable, setAccessToken } from '../utils/api';
 
 interface LandingPageProps {
   onLogin: (user: { name: string; email: string }) => void;
