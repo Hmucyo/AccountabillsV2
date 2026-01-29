@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Plus, TrendingUp, Clock, CheckCircle, XCircle, Wallet, UserPlus, Upload, MessageCircle, Bell } from 'lucide-react';
+import { Plus, TrendingUp, Clock, CheckCircle, XCircle, Wallet, UserPlus, Upload, MessageCircle, Bell, Search, X } from 'lucide-react';
 import { MoneyRequest, Approver, RequestStatus } from '../App';
 import { NewRequestModal } from './NewRequestModal';
 import { StatCard } from './StatCard';
+import { searchUsers } from '../utils/api';
 
 interface DashboardProps {
   requests: MoneyRequest[];
@@ -22,6 +23,10 @@ interface DashboardProps {
 
 export function Dashboard({ requests, addRequest, approvers, walletBalance, onNavigateToProfile, onNavigateToMessages, onNavigateToNotifications, unreadNotificationsCount = 0, onNavigateToReview, onNavigateToRequests, capturedImage, onClearCapturedImage, currentUser }: DashboardProps) {
   const [showNewRequest, setShowNewRequest] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
 
   // Auto-open modal when image is captured
   useEffect(() => {
@@ -29,6 +34,30 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
       setShowNewRequest(true);
     }
   }, [capturedImage]);
+
+  // Search for users
+  useEffect(() => {
+    const performSearch = async () => {
+      if (searchQuery.trim().length < 2) {
+        setSearchResults([]);
+        return;
+      }
+
+      setSearchLoading(true);
+      try {
+        const result = await searchUsers(searchQuery);
+        setSearchResults(result.users || []);
+      } catch (error) {
+        console.error('Search error:', error);
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    };
+
+    const timeoutId = setTimeout(performSearch, 300);
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery]);
 
   // Generate initials from user's name
   const getUserInitials = () => {
@@ -63,6 +92,12 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
           <p className="text-gray-600 dark:text-gray-400">Track your spending with accountability</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={() => setShowSearch(true)}
+            className="w-10 h-10 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          >
+            <Search className="w-5 h-5" />
+          </button>
           <button
             onClick={onNavigateToNotifications}
             className="relative w-10 h-10 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
@@ -282,6 +317,94 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
           capturedImage={capturedImage}
           onClearCapturedImage={onClearCapturedImage}
         />
+      )}
+
+      {/* Global User Search Modal */}
+      {showSearch && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start justify-center z-50 p-4 pt-20">
+          <div className="bg-white dark:bg-gray-900 rounded-3xl w-full max-w-lg shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center gap-3 p-4 border-b border-gray-200 dark:border-gray-700">
+              <Search className="w-5 h-5 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search users by username or email..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="flex-1 bg-transparent text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none"
+                autoFocus
+              />
+              <button
+                onClick={() => {
+                  setShowSearch(false);
+                  setSearchQuery('');
+                  setSearchResults([]);
+                }}
+                className="w-8 h-8 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Search Results */}
+            <div className="max-h-96 overflow-y-auto">
+              {searchLoading && (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin h-8 w-8 border-3 border-[#9E89FF] border-t-transparent rounded-full"></div>
+                </div>
+              )}
+
+              {!searchLoading && searchQuery.length >= 2 && searchResults.length === 0 && (
+                <div className="text-center py-12">
+                  <p className="text-gray-500 dark:text-gray-400">No users found</p>
+                  <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
+                    Try a different search term
+                  </p>
+                </div>
+              )}
+
+              {!searchLoading && searchQuery.length < 2 && (
+                <div className="text-center py-12">
+                  <Search className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+                  <p className="text-gray-500 dark:text-gray-400">Start typing to search users</p>
+                  <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
+                    Search by username or email
+                  </p>
+                </div>
+              )}
+
+              {!searchLoading && searchResults.length > 0 && (
+                <div className="p-2">
+                  {searchResults.map((user) => (
+                    <div
+                      key={user.id}
+                      className="flex items-center gap-3 p-3 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer"
+                      onClick={() => {
+                        // You can add navigation to user profile or add as partner
+                        console.log('Selected user:', user);
+                      }}
+                    >
+                      <img
+                        src={user.avatar}
+                        alt={user.name}
+                        className="w-12 h-12 rounded-full"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-gray-900 dark:text-white font-medium truncate">
+                          {user.name}
+                        </p>
+                        <p className="text-gray-500 dark:text-gray-400 text-sm truncate">
+                          {user.username ? `@${user.username}` : user.email}
+                        </p>
+                      </div>
+                      <UserPlus className="w-5 h-5 text-[#9E89FF]" />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
