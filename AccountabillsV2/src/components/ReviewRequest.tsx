@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { ArrowLeft, CheckCircle, XCircle, DollarSign, Calendar, Tag, User, MessageSquare } from 'lucide-react';
 import { MoneyRequest, RequestStatus } from '../App';
 
