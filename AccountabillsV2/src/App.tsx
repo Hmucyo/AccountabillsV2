@@ -334,31 +334,17 @@ export default function App() {
   // Subscribe to real-time messages
   useEffect(() => {
     if (!currentUser) return;
-    // #region agent log
-    fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:realtimeEffect',message:'Starting realtime subscription setup',data:{currentUser:currentUser.email},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
 
     let unsubscribe: (() => void) | null = null;
 
     const setupSubscription = async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        // #region agent log
-        fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:setupSubscription',message:'No user from supabase.auth.getUser',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
-        return;
-      }
-      // #region agent log
-      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:setupSubscription',message:'Got user, calling subscribeToMessages',data:{userId:user.id},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
+      if (!user) return;
 
       unsubscribe = subscribeToMessages(
         user.id,
         // On new message
         (newMessage) => {
-          // #region agent log
-          fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:onNewMessage',message:'Received new message in callback',data:{messageId:newMessage.id,text:newMessage.text,senderName:newMessage.senderName},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-          // #endregion
           setMessages(prev => {
             // Avoid duplicates
             if (prev.some(m => m.id === newMessage.id)) return prev;

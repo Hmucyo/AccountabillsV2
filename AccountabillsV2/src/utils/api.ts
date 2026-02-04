@@ -1315,9 +1315,6 @@ export const subscribeToMessages = (
   onMessage: (message: MessageData) => void,
   onConversationUpdate: () => void
 ) => {
-  // #region agent log
-  fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages',message:'Setting up subscription',data:{userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   const channel = supabase
     .channel(`messages:${userId}`)
     .on(
@@ -1328,17 +1325,9 @@ export const subscribeToMessages = (
         table: 'messages'
       },
       async (payload) => {
-        // #region agent log
-        fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages:callback',message:'Received postgres_changes event',data:{payload:payload.new,userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         const msg = payload.new as any;
         // Only process messages where we're the sender or recipient
-        if (msg.sender_id !== userId && msg.recipient_id !== userId) {
-          // #region agent log
-          fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages:filter',message:'Message filtered out - not for this user',data:{msgSenderId:msg.sender_id,msgRecipientId:msg.recipient_id,userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
-          // #endregion
-          return;
-        }
+        if (msg.sender_id !== userId && msg.recipient_id !== userId) return;
         
         // Get sender name
         let senderName = 'You';
@@ -1376,18 +1365,11 @@ export const subscribeToMessages = (
           createdAt: msg.created_at
         };
         
-        // #region agent log
-        fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages:onMessage',message:'Calling onMessage callback',data:{messageData},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-        // #endregion
         onMessage(messageData);
         onConversationUpdate();
       }
     )
-    .subscribe((status) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages:subscribeStatus',message:'Subscription status changed',data:{status},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-    });
+    .subscribe();
   
   return () => {
     supabase.removeChannel(channel);

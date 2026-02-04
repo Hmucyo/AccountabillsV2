@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Search, Send, ArrowLeft, UserPlus, Users, X, Camera, Check, Plus, ChevronRight, Trash2, Loader2 } from 'lucide-react';
 import { Conversation, Message, Approver } from '../App';
 import {
