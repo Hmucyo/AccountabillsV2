@@ -4,7 +4,7 @@ import { MoneyRequest, Approver } from '../App';
 
 interface NewRequestModalProps {
   onClose: () => void;
-  onSubmit: (request: Omit<MoneyRequest, 'id'>) => void;
+  onSubmit: (request: Omit<MoneyRequest, 'id'>, selectedApprovers: Approver[]) => void;
   approvers: Approver[];
   capturedImage?: string | null;
   onClearCapturedImage?: () => void;
@@ -34,6 +34,13 @@ export function NewRequestModal({ onClose, onSubmit, approvers, capturedImage, o
       return;
     }
 
+    // Find the full approver object
+    const approverObj = approvers.find(a => a.name === selectedApprover);
+    if (!approverObj) {
+      alert('Selected approver not found');
+      return;
+    }
+
     onSubmit({
       amount: parseFloat(amount),
       description,
@@ -43,7 +50,7 @@ export function NewRequestModal({ onClose, onSubmit, approvers, capturedImage, o
       submittedBy: 'You',
       approvers: [selectedApprover],
       imageUrl: imagePreview
-    });
+    }, [approverObj]);
 
     onClearCapturedImage?.();
     onClose();

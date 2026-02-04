@@ -5,7 +5,7 @@ interface FeedsProps {
   feedItems: FeedItem[];
   requests: MoneyRequest[];
   approvers: Approver[];
-  updateRequestStatus: (id: string, status: any, notes?: string, approver?: string) => void;
+  updateRequestStatus: (id: string, status: 'approved' | 'rejected', notes?: string, approver?: string) => void;
   onNavigateToProfile?: () => void;
   currentUser?: { name: string; email: string; } | null;
 }

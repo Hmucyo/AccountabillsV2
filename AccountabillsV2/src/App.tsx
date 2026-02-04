@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Home, FileText, CheckSquare, User, Bell, MessageCircle, Camera, Wallet, Rss } from 'lucide-react';
 import { Dashboard } from './components/Dashboard';
 import { MyRequests } from './components/MyRequests';
@@ -26,7 +26,28 @@ import {
   getTransactions,
   getCard,
   createCard,
-  CardData
+  CardData,
+  supabase,
+  // New Supabase APIs
+  getFriends,
+  addFriend,
+  removeFriend as apiRemoveFriend,
+  getNotifications as apiGetNotifications,
+  markNotificationAsRead as apiMarkNotificationAsRead,
+  markAllNotificationsAsRead as apiMarkAllNotificationsAsRead,
+  createNotification,
+  getConversations as apiGetConversations,
+  getMessages as apiGetMessages,
+  sendMessage as apiSendMessage,
+  markMessagesAsRead as apiMarkMessagesAsRead,
+  getOrCreateConversation,
+  sendFriendRequest,
+  acceptFriendRequest as apiAcceptFriendRequest,
+  rejectFriendRequest as apiRejectFriendRequest,
+  Friend,
+  NotificationData,
+  ConversationData,
+  MessageData
 } from './utils/api';
 
 export type RequestStatus = 'pending' | 'approved' | 'rejected';
@@ -222,6 +243,77 @@ export default function App() {
         console.error('Failed to fetch requests:', error);
       }
 
+      // Fetch friends/approvers from Supabase
+      try {
+        const friendsData = await getFriends();
+        const transformedApprovers: Approver[] = friendsData.map(f => ({
+          id: f.id,
+          name: f.friendName,
+          email: f.friendEmail,
+          avatar: f.friendAvatar,
+          role: f.role
+        }));
+        setApprovers(transformedApprovers);
+      } catch (error) {
+        console.error('Failed to fetch friends:', error);
+      }
+
+      // Fetch notifications from Supabase
+      try {
+        const notificationsData = await apiGetNotifications();
+        const transformedNotifications: Notification[] = notificationsData.map(n => ({
+          id: n.id,
+          type: n.type,
+          title: n.title,
+          message: n.message,
+          timestamp: n.createdAt,
+          read: n.read,
+          requestId: n.requestId,
+          approverId: n.approverId
+        }));
+        setNotifications(transformedNotifications);
+      } catch (error) {
+        console.error('Failed to fetch notifications:', error);
+      }
+
+      // Fetch conversations from Supabase
+      try {
+        const conversationsData = await apiGetConversations();
+        const transformedConversations: Conversation[] = conversationsData.map(c => ({
+          id: c.id,
+          participant: c.participantName,
+          lastMessage: c.lastMessage,
+          timestamp: c.lastMessageTime,
+          unreadCount: c.unreadCount,
+          avatar: c.participantAvatar
+        }));
+        setConversations(transformedConversations);
+
+        // Fetch messages for all conversations
+        const allMessages: Message[] = [];
+        for (const conv of conversationsData) {
+          try {
+            const msgs = await apiGetMessages(conv.id);
+            const transformedMsgs: Message[] = msgs.map(m => ({
+              id: m.id,
+              conversationId: m.conversationId,
+              sender: m.senderName,
+              recipient: m.senderName === 'You' ? conv.participantName : 'You',
+              text: m.text,
+              timestamp: m.createdAt,
+              read: m.read,
+              requestId: m.requestId
+            }));
+            allMessages.push(...transformedMsgs);
+          } catch (error) {
+            console.error(`Failed to fetch messages for conversation ${conv.id}:`, error);
+          }
+        }
+        setMessages(allMessages);
+      } catch (error) {
+        console.error('Failed to fetch conversations:', error);
+      }
+
     } catch (error) {
       console.error('Error fetching user data:', error);
     } finally {
@@ -244,18 +336,23 @@ export default function App() {
   const totalUnreadMessages = conversations.reduce((sum, conv) => sum + conv.unreadCount, 0);
   const unreadNotificationsCount = notifications.filter(n => !n.read).length;
 
-  const addRequest = async (request: Omit<MoneyRequest, 'id'>) => {
+  const addRequest = async (request: Omit<MoneyRequest, 'id'>, selectedApprovers?: Approver[]) => {
     try {
       // Transform UI format to API format
+      // Use the full approver objects if provided, otherwise look them up by name
+      const approverObjects = selectedApprovers || request.approvers.map(name => 
+        approvers.find(a => a.name === name)
+      ).filter(Boolean) as Approver[];
+
       const apiRequest = {
         amount: request.amount,
         description: request.description,
         category: request.category,
         imageUrl: request.imageUrl,
-        approvers: request.approvers.map(name => ({
-          userId: name, // In real implementation, this would be the actual user ID
-          name: name,
-          email: '' // Would come from approver lookup
+        approvers: approverObjects.map(approver => ({
+          userId: approver.id,
+          name: approver.name,
+          email: approver.email
         }))
       };
 
@@ -306,7 +403,7 @@ export default function App() {
     }
   };
 
-  const updateRequestStatus = async (id: string, status: RequestStatus, notes?: string, approver?: string) => {
+  const updateRequestStatus = async (id: string, status: 'approved' | 'rejected', notes?: string, approver?: string) => {
     try {
       // Call API
       await apiUpdateRequestStatus(id, status, notes);
@@ -363,61 +460,243 @@ export default function App() {
     }));
   };
 
-  const sendMessage = (conversationId: string, recipient: string, text: string) => {
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      conversationId,
-      sender: 'You',
-      recipient,
-      text,
-      timestamp: new Date().toISOString(),
-      read: false
-    };
-    setMessages([...messages, newMessage]);
+  const sendMessage = async (conversationId: string, recipient: string, text: string) => {
+    try {
+      // Find the recipient's user ID from the conversation
+      const conversation = conversations.find(c => c.id === conversationId);
+      if (!conversation) {
+        // This might be a new conversation, create it first
+        const approver = approvers.find(a => a.name === recipient);
+        if (approver) {
+          // For new conversations, we need to get or create the conversation first
+          // For now, handle locally and sync later
+          const newMessage: Message = {
+            id: Date.now().toString(),
+            conversationId,
+            sender: 'You',
+            recipient,
+            text,
+            timestamp: new Date().toISOString(),
+            read: false
+          };
+          setMessages([...messages, newMessage]);
+          
+          // Add new conversation to state
+          const newConv: Conversation = {
+            id: conversationId,
+            participant: recipient,
+            lastMessage: text,
+            timestamp: newMessage.timestamp,
+            unreadCount: 0,
+            avatar: approver.avatar
+          };
+          setConversations([newConv, ...conversations.filter(c => c.id !== conversationId)]);
+        }
+        return;
+      }
 
-    // Update conversation
-    setConversations(conversations.map(conv =>
-      conv.id === conversationId
-        ? { ...conv, lastMessage: text, timestamp: newMessage.timestamp }
-        : conv
-    ));
+      // Find the approver to get their ID
+      const approver = approvers.find(a => a.name === recipient);
+      
+      // Optimistic update
+      const newMessage: Message = {
+        id: Date.now().toString(),
+        conversationId,
+        sender: 'You',
+        recipient,
+        text,
+        timestamp: new Date().toISOString(),
+        read: false
+      };
+      setMessages([...messages, newMessage]);
+
+      // Update conversation
+      setConversations(conversations.map(conv =>
+        conv.id === conversationId
+          ? { ...conv, lastMessage: text, timestamp: newMessage.timestamp }
+          : conv
+      ));
+
+      // Try to send via Supabase if we have the friend data
+      if (approver) {
+        const friend = await getFriends().then(friends => 
+          friends.find(f => f.friendName === recipient)
+        );
+        if (friend) {
+          await apiSendMessage(conversationId, friend.friendId, text);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to send message:', error);
+    }
   };
 
-  const addApprover = (approver: Omit<Approver, 'id'>) => {
-    const newApprover = {
-      ...approver,
-      id: Date.now().toString()
-    };
-    setApprovers([...approvers, newApprover]);
+  const addApprover = async (approver: Omit<Approver, 'id'>) => {
+    try {
+      // For now, create a placeholder friend ID (in production, this would be a real user lookup)
+      const placeholderFriendId = crypto.randomUUID();
+      
+      const newFriend = await addFriend({
+        friendId: placeholderFriendId,
+        friendName: approver.name,
+        friendEmail: approver.email,
+        friendAvatar: approver.avatar,
+        role: approver.role
+      });
 
-    // Create notification
-    const notification: Notification = {
-      id: Date.now().toString() + '-notif-friend',
-      type: 'friend_request',
-      title: 'New Accountability Partner',
-      message: `${newApprover.name} was added as an accountability partner`,
-      timestamp: new Date().toISOString(),
-      read: false,
-      approverId: newApprover.id
-    };
-    setNotifications(prev => [notification, ...prev]);
+      const newApprover: Approver = {
+        id: newFriend.id,
+        name: approver.name,
+        email: approver.email,
+        avatar: approver.avatar,
+        role: approver.role
+      };
+      setApprovers([...approvers, newApprover]);
+
+      // Create notification in Supabase
+      const { data: { user } } = await import('./utils/api').then(m => m.supabase.auth.getUser());
+      if (user) {
+        await createNotification({
+          userId: user.id,
+          type: 'friend_request',
+          title: 'New Accountability Partner',
+          message: `${newApprover.name} was added as an accountability partner`,
+          approverId: newFriend.id
+        });
+      }
+
+      // Also update local notification state
+      const notification: Notification = {
+        id: Date.now().toString() + '-notif-friend',
+        type: 'friend_request',
+        title: 'New Accountability Partner',
+        message: `${newApprover.name} was added as an accountability partner`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        approverId: newApprover.id
+      };
+      setNotifications(prev => [notification, ...prev]);
+    } catch (error) {
+      console.error('Failed to add approver:', error);
+      // Fallback to local-only
+      const newApprover = {
+        ...approver,
+        id: Date.now().toString()
+      };
+      setApprovers([...approvers, newApprover]);
+    }
   };
 
-  const removeApprover = (id: string) => {
-    setApprovers(approvers.filter(a => a.id !== id));
+  const removeApprover = async (id: string) => {
+    try {
+      await apiRemoveFriend(id);
+      setApprovers(approvers.filter(a => a.id !== id));
+    } catch (error) {
+      console.error('Failed to remove approver:', error);
+      // Still remove from local state
+      setApprovers(approvers.filter(a => a.id !== id));
+    }
   };
 
-  const markNotificationAsRead = (id: string) => {
+  // Send a friend request to another user
+  const handleSendFriendRequest = async (userId: string, userName: string, userEmail: string, role: 'approver' | 'viewer') => {
+    try {
+      await sendFriendRequest({
+        friendId: userId,
+        friendName: userName,
+        friendEmail: userEmail,
+        role
+      });
+      
+      // Show local notification that request was sent
+      const notification: Notification = {
+        id: Date.now().toString() + '-sent',
+        type: 'friend_request',
+        title: 'Friend Request Sent',
+        message: `Request sent to ${userName}`,
+        timestamp: new Date().toISOString(),
+        read: true // Mark as read since user initiated it
+      };
+      setNotifications(prev => [notification, ...prev]);
+    } catch (error) {
+      console.error('Failed to send friend request:', error);
+      throw error;
+    }
+  };
+
+  // Accept a friend request
+  const handleAcceptFriendRequest = async (senderId: string, notificationId: string) => {
+    try {
+      await apiAcceptFriendRequest(senderId);
+      
+      // Mark notification as read
+      await apiMarkNotificationAsRead(notificationId);
+      setNotifications(notifications.map(n =>
+        n.id === notificationId ? { ...n, read: true, title: 'Friend Request Accepted' } : n
+      ));
+      
+      // Refresh friends list
+      const friendsData = await getFriends();
+      const transformedApprovers: Approver[] = friendsData.map(f => ({
+        id: f.id,
+        name: f.friendName,
+        email: f.friendEmail,
+        avatar: f.friendAvatar,
+        role: f.role
+      }));
+      setApprovers(transformedApprovers);
+    } catch (error) {
+      console.error('Failed to accept friend request:', error);
+      throw error;
+    }
+  };
+
+  // Reject a friend request
+  const handleRejectFriendRequest = async (senderId: string, notificationId: string) => {
+    try {
+      await apiRejectFriendRequest(senderId);
+      
+      // Mark notification as read and update message
+      await apiMarkNotificationAsRead(notificationId);
+      setNotifications(notifications.map(n =>
+        n.id === notificationId ? { ...n, read: true, title: 'Friend Request Declined' } : n
+      ));
+    } catch (error) {
+      console.error('Failed to reject friend request:', error);
+      throw error;
+    }
+  };
+
+  const markNotificationAsRead = async (id: string) => {
+    try {
+      await apiMarkNotificationAsRead(id);
+    } catch (error) {
+      console.error('Failed to mark notification as read:', error);
+    }
+    // Always update local state
     setNotifications(notifications.map(n =>
       n.id === id ? { ...n, read: true } : n
     ));
   };
 
-  const markAllNotificationsAsRead = () => {
+  const markAllNotificationsAsRead = async () => {
+    try {
+      await apiMarkAllNotificationsAsRead();
+    } catch (error) {
+      console.error('Failed to mark all notifications as read:', error);
+    }
+    // Always update local state
     setNotifications(notifications.map(n => ({ ...n, read: true })));
   };
 
-  const markMessagesAsRead = useCallback((conversationId: string) => {
+  const markMessagesAsRead = useCallback(async (conversationId: string) => {
+    try {
+      await apiMarkMessagesAsRead(conversationId);
+    } catch (error) {
+      console.error('Failed to mark messages as read:', error);
+    }
+    
+    // Always update local state
     setMessages(prevMessages => prevMessages.map(msg =>
       msg.conversationId === conversationId && msg.recipient === 'You'
         ? { ...msg, read: true }
@@ -475,6 +754,7 @@ export default function App() {
           capturedImage={capturedImage}
           onClearCapturedImage={() => setCapturedImage(null)}
           currentUser={currentUser}
+          onSendFriendRequest={handleSendFriendRequest}
         />;
       case 'requests':
         return <MyRequests
@@ -529,6 +809,8 @@ export default function App() {
             setSelectedRequestForReview(requestId);
             setCurrentView('review');
           }}
+          onAcceptFriendRequest={handleAcceptFriendRequest}
+          onRejectFriendRequest={handleRejectFriendRequest}
         />;
       case 'profile':
         return <Profile

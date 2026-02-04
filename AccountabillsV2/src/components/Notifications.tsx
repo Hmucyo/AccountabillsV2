@@ -1,4 +1,5 @@
-import { ArrowLeft, Bell, UserPlus, FileText, CheckCircle, XCircle } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowLeft, Bell, UserPlus, FileText, CheckCircle, XCircle, UserCheck, X } from 'lucide-react';
 import { Notification } from '../App';
 
 interface NotificationsProps {
@@ -7,10 +8,49 @@ interface NotificationsProps {
   onMarkAsRead: (id: string) => void;
   onMarkAllAsRead: () => void;
   onNavigateToRequest?: (requestId: string) => void;
+  onAcceptFriendRequest?: (senderId: string, notificationId: string) => Promise<void>;
+  onRejectFriendRequest?: (senderId: string, notificationId: string) => Promise<void>;
 }
 
-export function Notifications({ notifications, onBack, onMarkAsRead, onMarkAllAsRead, onNavigateToRequest }: NotificationsProps) {
+export function Notifications({ notifications, onBack, onMarkAsRead, onMarkAllAsRead, onNavigateToRequest, onAcceptFriendRequest, onRejectFriendRequest }: NotificationsProps) {
   const unreadCount = notifications.filter(n => !n.read).length;
+  const [processingRequest, setProcessingRequest] = useState<string | null>(null);
+
+  const handleAcceptFriendRequest = async (e: React.MouseEvent, notification: Notification) => {
+    e.stopPropagation();
+    if (!notification.approverId || !onAcceptFriendRequest) return;
+    
+    setProcessingRequest(`accept-${notification.id}`);
+    try {
+      await onAcceptFriendRequest(notification.approverId, notification.id);
+    } catch (error) {
+      console.error('Failed to accept friend request:', error);
+    } finally {
+      setProcessingRequest(null);
+    }
+  };
+
+  const handleRejectFriendRequest = async (e: React.MouseEvent, notification: Notification) => {
+    e.stopPropagation();
+    if (!notification.approverId || !onRejectFriendRequest) return;
+    
+    setProcessingRequest(`reject-${notification.id}`);
+    try {
+      await onRejectFriendRequest(notification.approverId, notification.id);
+    } catch (error) {
+      console.error('Failed to reject friend request:', error);
+    } finally {
+      setProcessingRequest(null);
+    }
+  };
+
+  // Check if this is a pending friend request (not accepted/rejected already)
+  const isPendingFriendRequest = (notification: Notification) => {
+    return notification.type === 'friend_request' && 
+           notification.approverId && 
+           notification.title === 'New Friend Request' &&
+           !notification.read;
+  };
 
   const getNotificationIcon = (type: Notification['type']) => {
     switch (type) {
@@ -94,14 +134,16 @@ export function Notifications({ notifications, onBack, onMarkAsRead, onMarkAllAs
               <div
                 key={notification.id}
                 onClick={() => {
-                  if (!notification.read) {
+                  if (!notification.read && !isPendingFriendRequest(notification)) {
                     onMarkAsRead(notification.id);
                   }
                   if (notification.requestId && onNavigateToRequest) {
                     onNavigateToRequest(notification.requestId);
                   }
                 }}
-                className={`p-4 rounded-xl border transition-all cursor-pointer ${
+                className={`p-4 rounded-xl border transition-all ${
+                  isPendingFriendRequest(notification) ? '' : 'cursor-pointer'
+                } ${
                   notification.read
                     ? 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'
                     : 'bg-purple-50 dark:bg-purple-900/20 border-[#9E89FF]'
@@ -139,7 +181,34 @@ export function Notifications({ notifications, onBack, onMarkAsRead, onMarkAllAs
                     }`}>
                       {notification.message}
                     </p>
-                    <p className="text-gray-500 dark:text-gray-500">
+                    
+                    {/* Friend Request Accept/Reject Buttons */}
+                    {isPendingFriendRequest(notification) && onAcceptFriendRequest && onRejectFriendRequest && (
+                      <div className="flex gap-2 mt-3">
+                        <button
+                          onClick={(e) => handleAcceptFriendRequest(e, notification)}
+                          disabled={processingRequest === `accept-${notification.id}`}
+                          className="flex-1 flex items-center justify-center gap-2 py-2 px-3 bg-[#9E89FF] text-white rounded-lg hover:bg-[#8B76F0] transition-colors disabled:opacity-50"
+                        >
+                          <UserCheck className="w-4 h-4" />
+                          <span className="text-sm">
+                            {processingRequest === `accept-${notification.id}` ? 'Accepting...' : 'Accept'}
+                          </span>
+                        </button>
+                        <button
+                          onClick={(e) => handleRejectFriendRequest(e, notification)}
+                          disabled={processingRequest === `reject-${notification.id}`}
+                          className="flex-1 flex items-center justify-center gap-2 py-2 px-3 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+                        >
+                          <X className="w-4 h-4" />
+                          <span className="text-sm">
+                            {processingRequest === `reject-${notification.id}` ? 'Declining...' : 'Decline'}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                    
+                    <p className="text-gray-500 dark:text-gray-500 mt-2">
                       {formatTimestamp(notification.timestamp)}
                     </p>
                   </div>

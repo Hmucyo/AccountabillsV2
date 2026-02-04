@@ -36,6 +36,16 @@ class MarqetaService {
     return response.data;
   }
 
+  // Find user by email (for recovering existing users)
+  async findUserByEmail(email) {
+    // Search for user by email - don't limit fields so we get the token
+    const response = await this.client.get(`/users?email=${encodeURIComponent(email)}`);
+    if (response.data?.data?.length > 0) {
+      return response.data.data[0]; // Return the first matching user
+    }
+    return null;
+  }
+
   // List all users
   async listUsers() {
     const response = await this.client.get('/users?count=100');
@@ -50,11 +60,24 @@ class MarqetaService {
 
   // Create a card for a user
   async createCard(userToken, cardProductToken) {
-    const response = await this.client.post('/cards?show_pan=true&show_cvv_number=true', {
-      user_token: userToken,
-      card_product_token: cardProductToken,
-    });
-    return response.data;
+    try {
+      // Try to create with full PAN/CVV visible
+      const response = await this.client.post('/cards?show_pan=true&show_cvv_number=true', {
+        user_token: userToken,
+        card_product_token: cardProductToken,
+      });
+      return response.data;
+    } catch (error) {
+      // If permission denied for full PAN, create without and fetch basic details
+      if (error.response?.status === 403 || error.response?.data?.error_message?.includes('permission')) {
+        const response = await this.client.post('/cards', {
+          user_token: userToken,
+          card_product_token: cardProductToken,
+        });
+        return response.data;
+      }
+      throw error;
+    }
   }
 
   // Get cards for a user
@@ -64,8 +87,23 @@ class MarqetaService {
   }
 
   // Get a single card with full details (PAN, CVV)
-  async getCardDetails(cardToken) {
-    const response = await this.client.get(`/cards/${cardToken}?show_pan=true&show_cvv_number=true`);
+  // Falls back to basic details if full PAN permission not available
+  async getCardDetails(cardToken, showSensitive = true) {
+    try {
+      if (showSensitive) {
+        const response = await this.client.get(`/cards/${cardToken}?show_pan=true&show_cvv_number=true`);
+        return response.data;
+      }
+    } catch (error) {
+      // If permission denied for full PAN, fall back to basic details
+      if (error.response?.status === 403 || error.response?.data?.error_message?.includes('permission')) {
+        console.log('[Marqeta] Full PAN permission denied, fetching basic card details');
+      } else {
+        throw error;
+      }
+    }
+    // Fallback: get basic card details without PAN/CVV
+    const response = await this.client.get(`/cards/${cardToken}`);
     return response.data;
   }
 

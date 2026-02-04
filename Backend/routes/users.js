@@ -13,7 +13,13 @@ router.post('/initialize', validateToken, async (req, res) => {
     const { firstName, lastName } = req.body;
 
     // Check if user already has a Marqeta token
-    let marqetaToken = await storageService.getUserMarqetaToken(userId);
+    let marqetaToken;
+    try {
+      marqetaToken = await storageService.getUserMarqetaToken(userId);
+    } catch (storageError) {
+      console.error('[Initialize] Storage error:', storageError.message);
+      throw storageError;
+    }
 
     if (marqetaToken) {
       // Already initialized, return existing token
@@ -26,12 +32,27 @@ router.post('/initialize', validateToken, async (req, res) => {
       });
     }
 
-    // Create new Marqeta user
-    const marqetaUser = await marqetaService.createUser({
-      first_name: firstName || user.user_metadata?.name?.split(' ')[0] || 'User',
-      last_name: lastName || user.user_metadata?.name?.split(' ').slice(1).join(' ') || userId.slice(0, 8),
-      email: userEmail
-    });
+    // Create new Marqeta user (or recover existing one)
+    let marqetaUser;
+    try {
+      marqetaUser = await marqetaService.createUser({
+        first_name: firstName || user.user_metadata?.name?.split(' ')[0] || 'User',
+        last_name: lastName || user.user_metadata?.name?.split(' ').slice(1).join(' ') || userId.slice(0, 8),
+        email: userEmail
+      });
+    } catch (createError) {
+      // Check if user already exists in Marqeta (error code 400057)
+      const errorCode = createError.response?.data?.error_code;
+      if (errorCode === '400057') {
+        // User already exists in Marqeta - recover by looking up by email
+        marqetaUser = await marqetaService.findUserByEmail(userEmail);
+        if (!marqetaUser || !marqetaUser.token) {
+          throw new Error('User exists in Marqeta but could not be found by email. Please contact support.');
+        }
+      } else {
+        throw createError;
+      }
+    }
 
     marqetaToken = marqetaUser.token;
 
@@ -247,8 +268,18 @@ router.get('/card', validateToken, async (req, res) => {
     }
 
     // Get user's cards
-    const cardsResponse = await marqetaService.getCardsForUser(marqetaToken);
-    const cards = cardsResponse.data || [];
+    let cards = [];
+    try {
+      const cardsResponse = await marqetaService.getCardsForUser(marqetaToken);
+      cards = cardsResponse.data || [];
+    } catch (cardsError) {
+      // Handle "not found" as no cards
+      if (cardsError.response?.status === 404) {
+        cards = [];
+      } else {
+        throw cardsError;
+      }
+    }
 
     if (cards.length === 0) {
       return res.json({
@@ -270,11 +301,11 @@ router.get('/card', validateToken, async (req, res) => {
         hasCard: true,
         card: {
           token: cardDetails.token,
-          pan: cardDetails.pan,
+          pan: cardDetails.pan || null,
           lastFour: cardDetails.last_four,
           expiration: cardDetails.expiration,
           expirationTime: cardDetails.expiration_time,
-          cvv: cardDetails.cvv_number,
+          cvv: cardDetails.cvv_number || null,
           state: cardDetails.state,
           cardProductToken: cardDetails.card_product_token,
           createdTime: cardDetails.created_time
@@ -304,7 +335,15 @@ router.post('/card', validateToken, async (req, res) => {
     }
 
     // Check if user already has a card
-    const existingCards = await marqetaService.getCardsForUser(marqetaToken);
+    let existingCards = { data: [] };
+    try {
+      existingCards = await marqetaService.getCardsForUser(marqetaToken);
+    } catch (cardsError) {
+      if (cardsError.response?.status !== 404) {
+        throw cardsError;
+      }
+    }
+    
     if (existingCards.data && existingCards.data.length > 0) {
       const activeCard = existingCards.data.find(c => c.state === 'ACTIVE') || existingCards.data[0];
       const cardDetails = await marqetaService.getCardDetails(activeCard.token);
@@ -315,11 +354,11 @@ router.post('/card', validateToken, async (req, res) => {
           alreadyExists: true,
           card: {
             token: cardDetails.token,
-            pan: cardDetails.pan,
+            pan: cardDetails.pan || null,
             lastFour: cardDetails.last_four,
             expiration: cardDetails.expiration,
             expirationTime: cardDetails.expiration_time,
-            cvv: cardDetails.cvv_number,
+            cvv: cardDetails.cvv_number || null,
             state: cardDetails.state,
             cardProductToken: cardDetails.card_product_token,
             createdTime: cardDetails.created_time
@@ -349,11 +388,11 @@ router.post('/card', validateToken, async (req, res) => {
         alreadyExists: false,
         card: {
           token: newCard.token,
-          pan: newCard.pan,
+          pan: newCard.pan || null,
           lastFour: newCard.last_four,
           expiration: newCard.expiration,
           expirationTime: newCard.expiration_time,
-          cvv: newCard.cvv_number,
+          cvv: newCard.cvv_number || null,
           state: newCard.state,
           cardProductToken: newCard.card_product_token,
           createdTime: newCard.created_time

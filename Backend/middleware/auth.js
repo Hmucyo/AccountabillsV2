@@ -1,9 +1,15 @@
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+// Use service role key for server-side auth validation (bypasses RLS)
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
+  }
+});
 
 export async function validateToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -18,7 +24,12 @@ export async function validateToken(req, res, next) {
     const { data: { user }, error } = await supabase.auth.getUser(token);
 
     if (error || !user) {
-      return res.status(401).json({ success: false, error: 'Invalid or expired token' });
+      console.error('Supabase auth error:', error);
+      return res.status(401).json({ 
+        success: false, 
+        error: error?.message || 'Invalid or expired token',
+        details: error
+      });
     }
 
     // Attach user info to request

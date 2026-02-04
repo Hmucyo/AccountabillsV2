@@ -4,7 +4,7 @@ import { MoneyRequest, RequestStatus } from '../App';
 
 interface ApprovalsProps {
   requests: MoneyRequest[];
-  updateRequestStatus: (id: string, status: RequestStatus, notes?: string, approver?: string) => void;
+  updateRequestStatus: (id: string, status: 'approved' | 'rejected', notes?: string, approver?: string) => void;
   onNavigateBack?: () => void;
   onNavigateToReview?: (requestId: string) => void;
 }

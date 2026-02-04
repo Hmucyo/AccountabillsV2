@@ -5,7 +5,7 @@ import { MoneyRequest, RequestStatus } from '../App';
 interface ReviewRequestProps {
   request: MoneyRequest;
   onBack: () => void;
-  onReview: (requestId: string, status: RequestStatus, comment: string, approver: string) => void;
+  onReview: (requestId: string, status: 'approved' | 'rejected', comment: string, approver: string) => void;
 }
 
 export function ReviewRequest({ request, onBack, onReview }: ReviewRequestProps) {

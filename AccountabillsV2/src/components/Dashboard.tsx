@@ -1,12 +1,13 @@
-import { useState, useEffect } from 'react';
-import { Plus, TrendingUp, Clock, CheckCircle, XCircle, Wallet, UserPlus, Upload, MessageCircle, Bell } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Plus, TrendingUp, Clock, CheckCircle, XCircle, Wallet, UserPlus, Upload, MessageCircle, Bell, Search, X, UserCheck, Eye, Loader2 } from 'lucide-react';
 import { MoneyRequest, Approver, RequestStatus } from '../App';
 import { NewRequestModal } from './NewRequestModal';
 import { StatCard } from './StatCard';
+import { searchUsers } from '../utils/api';
 
 interface DashboardProps {
   requests: MoneyRequest[];
-  addRequest: (request: Omit<MoneyRequest, 'id'>) => void;
+  addRequest: (request: Omit<MoneyRequest, 'id'>, selectedApprovers?: Approver[]) => void;
   approvers: Approver[];
   walletBalance: number;
   onNavigateToProfile: () => void;
@@ -18,10 +19,28 @@ interface DashboardProps {
   capturedImage?: string | null;
   onClearCapturedImage?: () => void;
   currentUser?: { name: string; email: string; } | null;
+  onSendFriendRequest?: (userId: string, userName: string, userEmail: string, role: 'approver' | 'viewer') => Promise<void>;
 }
 
-export function Dashboard({ requests, addRequest, approvers, walletBalance, onNavigateToProfile, onNavigateToMessages, onNavigateToNotifications, unreadNotificationsCount = 0, onNavigateToReview, onNavigateToRequests, capturedImage, onClearCapturedImage, currentUser }: DashboardProps) {
+interface SearchResult {
+  id: string;
+  name: string;
+  email: string;
+}
+
+const SEARCH_DELAY_SECONDS = 2;
+
+export function Dashboard({ requests, addRequest, approvers, walletBalance, onNavigateToProfile, onNavigateToMessages, onNavigateToNotifications, unreadNotificationsCount = 0, onNavigateToReview, onNavigateToRequests, capturedImage, onClearCapturedImage, currentUser, onSendFriendRequest }: DashboardProps) {
   const [showNewRequest, setShowNewRequest] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [sendingRequest, setSendingRequest] = useState<string | null>(null);
+  const [sentRequests, setSentRequests] = useState<Set<string>>(new Set());
+  const [countdown, setCountdown] = useState(0);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Auto-open modal when image is captured
   useEffect(() => {
@@ -29,6 +48,109 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
       setShowNewRequest(true);
     }
   }, [capturedImage]);
+
+  // Search for users
+  const performSearch = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    
+    setIsSearching(true);
+    setCountdown(0); // Reset countdown when search starts
+    try {
+      const results = await searchUsers(query);
+      // Filter out current user and existing approvers
+      const filteredResults = results.filter(user => 
+        user.email !== currentUser?.email && 
+        !approvers.some(a => a.email === user.email)
+      );
+      setSearchResults(filteredResults);
+    } catch (error) {
+      console.error('Search failed:', error);
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }, [currentUser?.email, approvers]);
+
+  // Debounced search - triggers after delay, with countdown
+  useEffect(() => {
+    // Clear previous timeouts
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+    }
+
+    // Don't search if query is empty or modal is closed
+    if (!searchQuery.trim() || !showSearch) {
+      setCountdown(0);
+      if (!searchQuery.trim()) {
+        setSearchResults([]);
+      }
+      return;
+    }
+
+    // Start countdown
+    setCountdown(SEARCH_DELAY_SECONDS);
+    
+    // Update countdown every second
+    countdownIntervalRef.current = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          if (countdownIntervalRef.current) {
+            clearInterval(countdownIntervalRef.current);
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Set timeout for search
+    searchTimeoutRef.current = setTimeout(() => {
+      performSearch(searchQuery);
+    }, SEARCH_DELAY_SECONDS * 1000);
+
+    // Cleanup on unmount or when dependencies change
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
+  }, [searchQuery, showSearch, performSearch]);
+
+  // Immediate search (for Enter key or button click)
+  const handleImmediateSearch = () => {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+    }
+    setCountdown(0);
+    performSearch(searchQuery);
+  };
+
+  // Send friend request
+  const handleSendFriendRequest = async (user: SearchResult, role: 'approver' | 'viewer') => {
+    if (!onSendFriendRequest) return;
+    
+    setSendingRequest(`${user.id}-${role}`);
+    try {
+      await onSendFriendRequest(user.id, user.name, user.email, role);
+      setSentRequests(prev => new Set(prev).add(user.id));
+    } catch (error) {
+      console.error('Failed to send friend request:', error);
+    } finally {
+      setSendingRequest(null);
+    }
+  };
 
   // Generate initials from user's name
   const getUserInitials = () => {
@@ -63,6 +185,12 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
           <p className="text-gray-600 dark:text-gray-400">Track your spending with accountability</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            onClick={() => setShowSearch(true)}
+            className="w-10 h-10 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          >
+            <Search className="w-5 h-5" />
+          </button>
           <button
             onClick={onNavigateToNotifications}
             className="relative w-10 h-10 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
@@ -282,6 +410,137 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
           capturedImage={capturedImage}
           onClearCapturedImage={onClearCapturedImage}
         />
+      )}
+
+      {/* Search Users Modal */}
+      {showSearch && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center z-50 pt-16">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-md mx-4 max-h-[80vh] overflow-hidden shadow-xl">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Find People</h3>
+                <button
+                  onClick={() => {
+                    setShowSearch(false);
+                    setSearchQuery('');
+                    setSearchResults([]);
+                    setCountdown(0);
+                  }}
+                  className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+                </button>
+              </div>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search by username or email..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleImmediateSearch()}
+                  className="w-full pl-10 pr-12 py-3 bg-gray-100 dark:bg-gray-800 rounded-xl text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#9E89FF]"
+                  autoFocus
+                />
+                {isSearching && (
+                  <Loader2 className="absolute right-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-[#9E89FF] animate-spin" />
+                )}
+              </div>
+              {searchQuery.trim() && !isSearching && countdown > 0 && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                  Searching in {countdown}s... or press Enter
+                </p>
+              )}
+            </div>
+
+            {/* Search Results */}
+            <div className="p-4 overflow-y-auto max-h-[60vh]">
+              {/* Searching indicator */}
+              {isSearching && (
+                <div className="text-center py-8">
+                  <Loader2 className="w-12 h-12 text-[#9E89FF] mx-auto mb-3 animate-spin" />
+                  <p className="text-gray-600 dark:text-gray-400">Searching...</p>
+                </div>
+              )}
+
+              {/* No results found - only show after search completed (countdown = 0) */}
+              {searchResults.length === 0 && !isSearching && searchQuery && searchQuery.length >= 2 && countdown === 0 && (
+                <div className="text-center py-8">
+                  <Search className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                  <p className="text-gray-600 dark:text-gray-400">No users found</p>
+                  <p className="text-gray-500 dark:text-gray-500 text-sm">Try a different username or email</p>
+                </div>
+              )}
+
+              {/* Empty state - no query */}
+              {searchResults.length === 0 && !isSearching && !searchQuery && (
+                <div className="text-center py-8">
+                  <UserPlus className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                  <p className="text-gray-600 dark:text-gray-400">Search for accountability partners</p>
+                  <p className="text-gray-500 dark:text-gray-500 text-sm">Start typing to find people by username or email</p>
+                </div>
+              )}
+
+              {searchResults.length > 0 && (
+                <div className="space-y-3">
+                  {searchResults.map((user) => {
+                    const isSent = sentRequests.has(user.id);
+                    const initials = user.name
+                      .split(' ')
+                      .map(n => n[0])
+                      .join('')
+                      .toUpperCase()
+                      .slice(0, 2);
+
+                    return (
+                      <div
+                        key={user.id}
+                        className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700"
+                      >
+                        <div className="flex items-center gap-3 mb-3">
+                          <div className="w-12 h-12 bg-[#9E89FF] rounded-full flex items-center justify-center text-white font-medium">
+                            {initials || '?'}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-gray-900 dark:text-white truncate">{user.name}</p>
+                            <p className="text-sm text-gray-500 dark:text-gray-400 truncate">{user.email}</p>
+                          </div>
+                        </div>
+
+                        {isSent ? (
+                          <div className="flex items-center justify-center gap-2 py-2 text-green-600 dark:text-green-400">
+                            <CheckCircle className="w-5 h-5" />
+                            <span>Request sent!</span>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleSendFriendRequest(user, 'approver')}
+                              disabled={sendingRequest === `${user.id}-approver`}
+                              className="flex-1 flex items-center justify-center gap-2 py-2 px-3 bg-[#9E89FF] text-white rounded-lg hover:bg-[#8B76F0] transition-colors disabled:opacity-50"
+                            >
+                              <UserCheck className="w-4 h-4" />
+                              <span className="text-sm">Add as Approver</span>
+                            </button>
+                            <button
+                              onClick={() => handleSendFriendRequest(user, 'viewer')}
+                              disabled={sendingRequest === `${user.id}-viewer`}
+                              className="flex-1 flex items-center justify-center gap-2 py-2 px-3 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50"
+                            >
+                              <Eye className="w-4 h-4" />
+                              <span className="text-sm">Add as Viewer</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

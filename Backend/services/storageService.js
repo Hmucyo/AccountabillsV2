@@ -2,9 +2,15 @@
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+// Use service role key for server-side operations (bypasses RLS)
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false
+  }
+});
 
 class StorageService {
   constructor() {
@@ -50,7 +56,7 @@ class StorageService {
       .single();
 
     if (error && error.code !== 'PGRST116') { // PGRST116 = no rows found
-      console.error('Error fetching Marqeta token from Supabase:', error);
+      console.error('[StorageService] Supabase error:', error);
     }
 
     if (data?.marqeta_token) {
