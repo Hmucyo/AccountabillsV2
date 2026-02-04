@@ -41,6 +41,7 @@ import {
   sendMessage as apiSendMessage,
   markMessagesAsRead as apiMarkMessagesAsRead,
   getOrCreateConversation,
+  subscribeToMessages,
   sendFriendRequest,
   acceptFriendRequest as apiAcceptFriendRequest,
   rejectFriendRequest as apiRejectFriendRequest,
@@ -68,7 +69,8 @@ export interface MoneyRequest {
 }
 
 export interface Approver {
-  id: string;
+  id: string;  // Friend record ID (for removing friends)
+  userId: string;  // Actual user ID (for group creation, messaging, etc.)
   name: string;
   email: string;
   avatar: string;
@@ -247,7 +249,8 @@ export default function App() {
       try {
         const friendsData = await getFriends();
         const transformedApprovers: Approver[] = friendsData.map(f => ({
-          id: f.id,
+          id: f.id,  // Friend record ID (for removing)
+          userId: f.friendId,  // Actual user ID (for groups, messaging)
           name: f.friendName,
           email: f.friendEmail,
           avatar: f.friendAvatar,
@@ -327,6 +330,76 @@ export default function App() {
       fetchUserData();
     }
   }, [currentUser, fetchUserData]);
+
+  // Subscribe to real-time messages
+  useEffect(() => {
+    if (!currentUser) return;
+    // #region agent log
+    fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:realtimeEffect',message:'Starting realtime subscription setup',data:{currentUser:currentUser.email},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+
+    let unsubscribe: (() => void) | null = null;
+
+    const setupSubscription = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        // #region agent log
+        fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:setupSubscription',message:'No user from supabase.auth.getUser',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+        return;
+      }
+      // #region agent log
+      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:setupSubscription',message:'Got user, calling subscribeToMessages',data:{userId:user.id},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+
+      unsubscribe = subscribeToMessages(
+        user.id,
+        // On new message
+        (newMessage) => {
+          // #region agent log
+          fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:onNewMessage',message:'Received new message in callback',data:{messageId:newMessage.id,text:newMessage.text,senderName:newMessage.senderName},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+          // #endregion
+          setMessages(prev => {
+            // Avoid duplicates
+            if (prev.some(m => m.id === newMessage.id)) return prev;
+            return [...prev, {
+              id: newMessage.id,
+              conversationId: newMessage.conversationId,
+              sender: newMessage.senderName,
+              recipient: newMessage.senderId === user.id ? '' : 'You',
+              text: newMessage.text,
+              timestamp: newMessage.createdAt,
+              read: newMessage.read,
+              requestId: newMessage.requestId
+            }];
+          });
+        },
+        // On conversation update - refresh conversations list
+        async () => {
+          try {
+            const conversationsData = await apiGetConversations();
+            const transformedConversations: Conversation[] = conversationsData.map(c => ({
+              id: c.id,
+              participant: c.participantName,
+              lastMessage: c.lastMessage,
+              timestamp: c.lastMessageTime,
+              unreadCount: c.unreadCount,
+              avatar: c.participantAvatar
+            }));
+            setConversations(transformedConversations);
+          } catch (error) {
+            console.error('Failed to refresh conversations:', error);
+          }
+        }
+      );
+    };
+
+    setupSubscription();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [currentUser]);
 
   // Calculate accessible funds from approved requests submitted by the user
   const accessibleFunds = requests
@@ -462,76 +535,68 @@ export default function App() {
 
   const sendMessage = async (conversationId: string, recipient: string, text: string) => {
     try {
-      // Find the recipient's user ID from the conversation
-      const conversation = conversations.find(c => c.id === conversationId);
-      if (!conversation) {
-        // This might be a new conversation, create it first
-        const approver = approvers.find(a => a.name === recipient);
-        if (approver) {
-          // For new conversations, we need to get or create the conversation first
-          // For now, handle locally and sync later
-          const newMessage: Message = {
-            id: Date.now().toString(),
-            conversationId,
-            sender: 'You',
-            recipient,
-            text,
-            timestamp: new Date().toISOString(),
-            read: false
-          };
-          setMessages([...messages, newMessage]);
-          
-          // Add new conversation to state
-          const newConv: Conversation = {
-            id: conversationId,
-            participant: recipient,
-            lastMessage: text,
-            timestamp: newMessage.timestamp,
-            unreadCount: 0,
-            avatar: approver.avatar
-          };
-          setConversations([newConv, ...conversations.filter(c => c.id !== conversationId)]);
-        }
+      console.log('sendMessage called:', { conversationId, recipient, text, approvers: approvers.map(a => ({ name: a.name, userId: a.userId })) });
+      
+      // Find the approver to get their user ID
+      const approver = approvers.find(a => a.name === recipient);
+      if (!approver) {
+        console.error('Approver not found:', recipient, 'Available approvers:', approvers.map(a => a.name));
+        alert(`Cannot send message: "${recipient}" not found in your contacts. Available: ${approvers.map(a => a.name).join(', ') || 'none'}`);
         return;
       }
 
-      // Find the approver to get their ID
-      const approver = approvers.find(a => a.name === recipient);
+      if (!approver.userId) {
+        console.error('Approver has no userId:', approver);
+        alert('Cannot send message: Contact has no user ID. Please refresh the app.');
+        return;
+      }
+
+      // Get or create the conversation in the database using the actual user ID
+      const dbConversationId = await getOrCreateConversation(approver.userId);
+      console.log('Got conversation ID:', dbConversationId);
       
-      // Optimistic update
+      // Optimistic update with the database conversation ID
       const newMessage: Message = {
         id: Date.now().toString(),
-        conversationId,
+        conversationId: dbConversationId,
         sender: 'You',
         recipient,
         text,
         timestamp: new Date().toISOString(),
         read: false
       };
-      setMessages([...messages, newMessage]);
+      setMessages(prev => [...prev, newMessage]);
 
-      // Update conversation
-      setConversations(conversations.map(conv =>
-        conv.id === conversationId
-          ? { ...conv, lastMessage: text, timestamp: newMessage.timestamp }
-          : conv
-      ));
-
-      // Try to send via Supabase if we have the friend data
-      if (approver) {
-        const friend = await getFriends().then(friends => 
-          friends.find(f => f.friendName === recipient)
-        );
-        if (friend) {
-          await apiSendMessage(conversationId, friend.friendId, text);
-        }
+      // Update or add conversation in local state
+      const existingConv = conversations.find(c => c.id === dbConversationId || c.participant === recipient);
+      if (existingConv) {
+        setConversations(prev => prev.map(conv =>
+          conv.id === existingConv.id
+            ? { ...conv, id: dbConversationId, lastMessage: text, timestamp: newMessage.timestamp }
+            : conv
+        ));
+      } else {
+        const newConv: Conversation = {
+          id: dbConversationId,
+          participant: recipient,
+          lastMessage: text,
+          timestamp: newMessage.timestamp,
+          unreadCount: 0,
+          avatar: approver.avatar
+        };
+        setConversations(prev => [newConv, ...prev]);
       }
+
+      // Send the message via Supabase
+      await apiSendMessage(dbConversationId, approver.userId, text);
+      console.log('Message sent successfully');
     } catch (error) {
       console.error('Failed to send message:', error);
+      alert('Failed to send message: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
   };
 
-  const addApprover = async (approver: Omit<Approver, 'id'>) => {
+  const addApprover = async (approver: Omit<Approver, 'id' | 'userId'>) => {
     try {
       // For now, create a placeholder friend ID (in production, this would be a real user lookup)
       const placeholderFriendId = crypto.randomUUID();
@@ -546,6 +611,7 @@ export default function App() {
 
       const newApprover: Approver = {
         id: newFriend.id,
+        userId: newFriend.friendId,  // The actual user ID
         name: approver.name,
         email: approver.email,
         avatar: approver.avatar,
@@ -579,9 +645,10 @@ export default function App() {
     } catch (error) {
       console.error('Failed to add approver:', error);
       // Fallback to local-only
-      const newApprover = {
+      const newApprover: Approver = {
         ...approver,
-        id: Date.now().toString()
+        id: Date.now().toString(),
+        userId: crypto.randomUUID()  // Placeholder
       };
       setApprovers([...approvers, newApprover]);
     }
@@ -639,6 +706,7 @@ export default function App() {
       const friendsData = await getFriends();
       const transformedApprovers: Approver[] = friendsData.map(f => ({
         id: f.id,
+        userId: f.friendId,
         name: f.friendName,
         email: f.friendEmail,
         avatar: f.friendAvatar,

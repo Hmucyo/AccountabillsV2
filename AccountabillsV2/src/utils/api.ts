@@ -311,10 +311,12 @@ export const getFriends = async (): Promise<Friend[]> => {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
+  // Only get friends where current user is the one who added them
+  // This prevents showing reverse relationships where someone else added you
   const { data, error } = await supabase
     .from('friends')
     .select('*')
-    .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`)
+    .eq('user_id', user.id)
     .eq('status', 'accepted')
     .order('created_at', { ascending: false });
 
@@ -343,6 +345,44 @@ export const addFriend = async (friendData: {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
+  // Check if this friend already exists (by email) to prevent duplicates
+  const { data: existingFriend } = await supabase
+    .from('friends')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('friend_email', friendData.friendEmail)
+    .single();
+
+  if (existingFriend) {
+    // Friend already exists - update their role instead of creating duplicate
+    const { data, error } = await supabase
+      .from('friends')
+      .update({
+        role: friendData.role,
+        friend_name: friendData.friendName,
+        friend_avatar: friendData.friendAvatar || existingFriend.friend_avatar,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', existingFriend.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return {
+      id: data.id,
+      userId: data.user_id,
+      friendId: data.friend_id,
+      friendName: data.friend_name,
+      friendEmail: data.friend_email,
+      friendAvatar: data.friend_avatar,
+      role: data.role,
+      status: data.status,
+      createdAt: data.created_at
+    };
+  }
+
+  // No existing friend - create new entry
   const { data, error } = await supabase
     .from('friends')
     .insert({
@@ -499,15 +539,40 @@ export const acceptFriendRequest = async (senderId: string): Promise<void> => {
       .eq('id', senderId)
       .single();
 
+    // Get sender's email from the original friend request notification if no profile
+    // The sender's info should come from the notification, not the friend_name field
+    // (friend_name in friendData is the recipient's name, not sender's)
+    const { data: notificationData } = await supabase
+      .from('notifications')
+      .select('message')
+      .eq('user_id', user.id)
+      .eq('approver_id', senderId)
+      .eq('type', 'friend_request')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    // Extract sender name from notification message (format: "X wants to add you as...")
+    let senderNameFromNotification: string | null = null;
+    if (notificationData?.message) {
+      const match = notificationData.message.match(/^(.+?) wants to add you/);
+      if (match) senderNameFromNotification = match[1];
+    }
+
+    // Use sender profile if available, otherwise use name from notification, otherwise use a fallback
+    const senderName = senderProfile?.name || senderNameFromNotification || 'User';
+    const senderEmail = senderProfile?.email || `user-${senderId.slice(0, 8)}@unknown.com`;
+    const senderAvatar = senderProfile?.avatar || '👤';
+
     // Create reverse friend relationship (so both users can see each other)
     await supabase
       .from('friends')
       .upsert({
         user_id: user.id,
         friend_id: senderId,
-        friend_name: senderProfile?.name || friendData.friend_name,
-        friend_email: senderProfile?.email || friendData.friend_email,
-        friend_avatar: senderProfile?.avatar || friendData.friend_avatar,
+        friend_name: senderName,
+        friend_email: senderEmail,
+        friend_avatar: senderAvatar,
         role: 'viewer', // Default to viewer for the reverse relationship
         status: 'accepted'
       }, { onConflict: 'user_id,friend_id' });
@@ -660,12 +725,27 @@ export const getConversations = async (): Promise<ConversationData[]> => {
         ? conv.participant_2 
         : conv.participant_1;
 
-      // Get friend info
+      // Get friend info (only from current user's friends due to RLS)
       const { data: friendData } = await supabase
         .from('friends')
         .select('friend_name, friend_avatar')
-        .or(`and(user_id.eq.${user.id},friend_id.eq.${otherParticipantId}),and(user_id.eq.${otherParticipantId},friend_id.eq.${user.id})`)
+        .eq('user_id', user.id)
+        .eq('friend_id', otherParticipantId)
         .single();
+      
+      // If no friend data found, try to get name from profiles table
+      let participantName = friendData?.friend_name;
+      let participantAvatar = friendData?.friend_avatar || '👤';
+      
+      if (!participantName) {
+        const { data: profileData } = await supabase
+          .from('profiles')
+          .select('name, avatar')
+          .eq('id', otherParticipantId)
+          .single();
+        participantName = profileData?.name || 'Unknown';
+        participantAvatar = profileData?.avatar || '👤';
+      }
 
       // Get last message
       const { data: lastMessageData } = await supabase
@@ -687,8 +767,8 @@ export const getConversations = async (): Promise<ConversationData[]> => {
       return {
         id: conv.id,
         participantId: otherParticipantId,
-        participantName: friendData?.friend_name || 'Unknown',
-        participantAvatar: friendData?.friend_avatar || '👤',
+        participantName: participantName,
+        participantAvatar: participantAvatar,
         lastMessage: lastMessageData?.text || '',
         lastMessageTime: lastMessageData?.created_at || conv.created_at,
         unreadCount: count || 0
@@ -716,12 +796,25 @@ export const getMessages = async (conversationId: string): Promise<MessageData[]
     (data || []).map(async (msg) => {
       let senderName = 'You';
       if (msg.sender_id !== user.id) {
+        // Try to get name from friends table first
         const { data: friendData } = await supabase
           .from('friends')
           .select('friend_name')
-          .or(`and(user_id.eq.${user.id},friend_id.eq.${msg.sender_id}),and(user_id.eq.${msg.sender_id},friend_id.eq.${user.id})`)
+          .eq('user_id', user.id)
+          .eq('friend_id', msg.sender_id)
           .single();
-        senderName = friendData?.friend_name || 'Unknown';
+        
+        if (friendData?.friend_name) {
+          senderName = friendData.friend_name;
+        } else {
+          // Fallback to profiles table
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('name')
+            .eq('id', msg.sender_id)
+            .single();
+          senderName = profileData?.name || 'Unknown';
+        }
       }
 
       return {
@@ -931,6 +1024,443 @@ export const markAllNotificationsAsRead = async (): Promise<void> => {
 export const getFeed = async () => {
   // TODO: Implement when feed backend is ready
   return [];
+};
+
+// ===== GROUPS API =====
+
+export interface Group {
+  id: string;
+  name: string;
+  avatar_url: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GroupMember {
+  id: string;
+  group_id: string;
+  user_id: string;
+  role: 'admin' | 'member';
+  joined_at: string;
+  // Joined data from profiles
+  profile?: {
+    id: string;
+    name: string;
+    email: string;
+    avatar?: string;
+  };
+}
+
+export interface GroupMessage {
+  id: string;
+  group_id: string;
+  sender_id: string;
+  content: string;
+  created_at: string;
+  // Joined data from profiles
+  sender?: {
+    id: string;
+    name: string;
+    avatar?: string;
+  };
+}
+
+export interface GroupWithMembers extends Group {
+  members: GroupMember[];
+  lastMessage?: GroupMessage;
+  unreadCount?: number;
+}
+
+// Get all groups the current user is a member of
+export const getGroups = async (): Promise<GroupWithMembers[]> => {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  // Get groups with members
+  const { data: groups, error } = await supabase
+    .from('groups')
+    .select(`
+      *,
+      group_members (
+        id,
+        user_id,
+        role,
+        joined_at
+      )
+    `)
+    .order('updated_at', { ascending: false });
+
+  if (error) throw error;
+
+  // Get member profiles and last messages for each group
+  const groupsWithDetails = await Promise.all((groups || []).map(async (group) => {
+    // Get member profiles
+    const memberIds = group.group_members.map((m: GroupMember) => m.user_id);
+    const { data: profiles } = await supabase
+      .from('profiles')
+      .select('id, name, email, avatar')
+      .in('id', memberIds);
+
+    const membersWithProfiles = group.group_members.map((member: GroupMember) => ({
+      ...member,
+      profile: profiles?.find(p => p.id === member.user_id)
+    }));
+
+    // Get last message
+    const { data: lastMessages } = await supabase
+      .from('group_messages')
+      .select('*, sender:profiles!sender_id(id, name, avatar)')
+      .eq('group_id', group.id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    return {
+      ...group,
+      members: membersWithProfiles,
+      lastMessage: lastMessages?.[0] || undefined
+    };
+  }));
+
+  return groupsWithDetails;
+};
+
+// Create a new group
+export const createGroup = async (
+  name: string,
+  avatarUrl: string | null,
+  memberIds: string[]
+): Promise<Group> => {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  console.log('createGroup: Creating group', { name, avatarUrl, memberIds, userId: user.id });
+
+  // Create the group
+  const { data: group, error: groupError } = await supabase
+    .from('groups')
+    .insert({
+      name,
+      avatar_url: avatarUrl,
+      created_by: user.id
+    })
+    .select()
+    .single();
+
+  if (groupError) {
+    console.error('createGroup: Failed to create group', groupError);
+    throw new Error(`Failed to create group: ${groupError.message}`);
+  }
+
+  console.log('createGroup: Group created', group);
+
+  // Add creator as admin
+  const { error: creatorError } = await supabase
+    .from('group_members')
+    .insert({
+      group_id: group.id,
+      user_id: user.id,
+      role: 'admin'
+    });
+
+  if (creatorError) {
+    console.error('createGroup: Failed to add creator as admin', creatorError);
+    throw new Error(`Failed to add creator as admin: ${creatorError.message}`);
+  }
+
+  console.log('createGroup: Creator added as admin');
+
+  // Add other members
+  if (memberIds.length > 0) {
+    const memberInserts = memberIds
+      .filter(id => id !== user.id) // Don't add creator twice
+      .map(userId => ({
+        group_id: group.id,
+        user_id: userId,
+        role: 'member' as const
+      }));
+
+    console.log('createGroup: Adding members', memberInserts);
+
+    if (memberInserts.length > 0) {
+      const { error: membersError } = await supabase
+        .from('group_members')
+        .insert(memberInserts);
+
+      if (membersError) {
+        console.error('createGroup: Failed to add members', membersError);
+        throw new Error(`Failed to add members: ${membersError.message}`);
+      }
+    }
+  }
+
+  console.log('createGroup: Group created successfully');
+  return group;
+};
+
+// Update a group
+export const updateGroup = async (
+  groupId: string,
+  updates: { name?: string; avatar_url?: string | null }
+): Promise<Group> => {
+  const { data, error } = await supabase
+    .from('groups')
+    .update(updates)
+    .eq('id', groupId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
+// Delete a group
+export const deleteGroup = async (groupId: string): Promise<void> => {
+  const { error } = await supabase
+    .from('groups')
+    .delete()
+    .eq('id', groupId);
+
+  if (error) throw error;
+};
+
+// Add a member to a group
+export const addGroupMember = async (
+  groupId: string,
+  userId: string,
+  role: 'admin' | 'member' = 'member'
+): Promise<GroupMember> => {
+  const { data, error } = await supabase
+    .from('group_members')
+    .insert({
+      group_id: groupId,
+      user_id: userId,
+      role
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
+// Remove a member from a group
+export const removeGroupMember = async (
+  groupId: string,
+  userId: string
+): Promise<void> => {
+  const { error } = await supabase
+    .from('group_members')
+    .delete()
+    .eq('group_id', groupId)
+    .eq('user_id', userId);
+
+  if (error) throw error;
+};
+
+// Get messages for a group
+export const getGroupMessages = async (
+  groupId: string,
+  limit: number = 50
+): Promise<GroupMessage[]> => {
+  const { data, error } = await supabase
+    .from('group_messages')
+    .select(`
+      *,
+      sender:profiles!sender_id(id, name, avatar)
+    `)
+    .eq('group_id', groupId)
+    .order('created_at', { ascending: true })
+    .limit(limit);
+
+  if (error) throw error;
+  return data || [];
+};
+
+// Send a message to a group
+export const sendGroupMessage = async (
+  groupId: string,
+  content: string
+): Promise<GroupMessage> => {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { data, error } = await supabase
+    .from('group_messages')
+    .insert({
+      group_id: groupId,
+      sender_id: user.id,
+      content
+    })
+    .select(`
+      *,
+      sender:profiles!sender_id(id, name, avatar)
+    `)
+    .single();
+
+  if (error) throw error;
+
+  // Update group's updated_at timestamp
+  await supabase
+    .from('groups')
+    .update({ updated_at: new Date().toISOString() })
+    .eq('id', groupId);
+
+  return data;
+};
+
+// Subscribe to real-time direct messages
+export const subscribeToMessages = (
+  userId: string,
+  onMessage: (message: MessageData) => void,
+  onConversationUpdate: () => void
+) => {
+  // #region agent log
+  fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages',message:'Setting up subscription',data:{userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
+  const channel = supabase
+    .channel(`messages:${userId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages'
+      },
+      async (payload) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages:callback',message:'Received postgres_changes event',data:{payload:payload.new,userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        const msg = payload.new as any;
+        // Only process messages where we're the sender or recipient
+        if (msg.sender_id !== userId && msg.recipient_id !== userId) {
+          // #region agent log
+          fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages:filter',message:'Message filtered out - not for this user',data:{msgSenderId:msg.sender_id,msgRecipientId:msg.recipient_id,userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
+          // #endregion
+          return;
+        }
+        
+        // Get sender name
+        let senderName = 'You';
+        if (msg.sender_id !== userId) {
+          // Try friends table first
+          const { data: friendData } = await supabase
+            .from('friends')
+            .select('friend_name')
+            .eq('user_id', userId)
+            .eq('friend_id', msg.sender_id)
+            .single();
+          
+          if (friendData?.friend_name) {
+            senderName = friendData.friend_name;
+          } else {
+            // Fallback to profiles
+            const { data: profileData } = await supabase
+              .from('profiles')
+              .select('name')
+              .eq('id', msg.sender_id)
+              .single();
+            senderName = profileData?.name || 'Unknown';
+          }
+        }
+        
+        const messageData: MessageData = {
+          id: msg.id,
+          conversationId: msg.conversation_id,
+          senderId: msg.sender_id,
+          senderName,
+          recipientId: msg.recipient_id,
+          text: msg.text,
+          read: msg.read,
+          requestId: msg.request_id,
+          createdAt: msg.created_at
+        };
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages:onMessage',message:'Calling onMessage callback',data:{messageData},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+        onMessage(messageData);
+        onConversationUpdate();
+      }
+    )
+    .subscribe((status) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'api.ts:subscribeToMessages:subscribeStatus',message:'Subscription status changed',data:{status},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+    });
+  
+  return () => {
+    supabase.removeChannel(channel);
+  };
+};
+
+// Subscribe to real-time group messages
+export const subscribeToGroupMessages = (
+  groupId: string,
+  onMessage: (message: GroupMessage) => void
+) => {
+  const channel = supabase
+    .channel(`group_messages:${groupId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'group_messages',
+        filter: `group_id=eq.${groupId}`
+      },
+      async (payload) => {
+        // Fetch the message with sender info
+        const { data } = await supabase
+          .from('group_messages')
+          .select(`
+            *,
+            sender:profiles!sender_id(id, name, avatar)
+          `)
+          .eq('id', payload.new.id)
+          .single();
+
+        if (data) {
+          onMessage(data);
+        }
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+};
+
+// Subscribe to all group updates (for the groups list)
+export const subscribeToGroups = (
+  onUpdate: () => void
+) => {
+  const channel = supabase
+    .channel('groups_updates')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'groups'
+      },
+      () => onUpdate()
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'group_members'
+      },
+      () => onUpdate()
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
 };
 
 // ===== HEALTH CHECK =====
