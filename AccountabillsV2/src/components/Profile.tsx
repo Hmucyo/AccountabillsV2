@@ -1,5 +1,5 @@
-import { Mail, Shield, UserCircle, Plus, Users, Trash2, Settings, Upload, UserPlus, MessageCircle, Moon, Sun, ChevronDown, LogOut } from 'lucide-react';
-import { Approver } from '../App';
+import { Mail, Shield, UserCircle, Plus, Users, Trash2, Settings, Upload, UserPlus, MessageCircle, Moon, Sun, ChevronDown, LogOut, UsersRound, Edit2, Check, X } from 'lucide-react';
+import { Approver, ApproverGroup } from '../App';
 import { useState, useEffect } from 'react';
 import { checkContactUsers, sendInvitation } from '../utils/api';
 
@@ -7,6 +7,10 @@ interface ProfileProps {
   approvers: Approver[];
   addApprover: (approver: Approver) => void;
   removeApprover: (id: string) => void;
+  approverGroups?: ApproverGroup[];
+  addApproverGroup?: (group: Omit<ApproverGroup, 'id' | 'createdAt'>) => void;
+  removeApproverGroup?: (id: string) => void;
+  updateApproverGroup?: (id: string, updates: Partial<ApproverGroup>) => void;
   approvalThreshold: number;
   setApprovalThreshold: (threshold: number) => void;
   isDarkMode?: boolean;
@@ -25,7 +29,7 @@ interface ContactWithStatus {
   userId?: string | null;
 }
 
-export function Profile({ approvers, addApprover, removeApprover, approvalThreshold, setApprovalThreshold, isDarkMode, setIsDarkMode, onMessageApprover, onLogout, currentUser }: ProfileProps) {
+export function Profile({ approvers, addApprover, removeApprover, approverGroups = [], addApproverGroup, removeApproverGroup, updateApproverGroup, approvalThreshold, setApprovalThreshold, isDarkMode, setIsDarkMode, onMessageApprover, onLogout, currentUser }: ProfileProps) {
   const [showAddApprover, setShowAddApprover] = useState(false);
   const [newApproverName, setNewApproverName] = useState('');
   const [newApproverEmail, setNewApproverEmail] = useState('');
@@ -35,6 +39,13 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
   const [contacts, setContacts] = useState<ContactWithStatus[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [sendingInvitation, setSendingInvitation] = useState<string | null>(null);
+  
+  // Group management state
+  const [showGroupsList, setShowGroupsList] = useState(false);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<Set<string>>(new Set());
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
 
   // Mock contacts - will be replaced with real contacts when user grants permission
   const mockContacts: ContactWithStatus[] = [
@@ -151,6 +162,66 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
     } finally {
       setSendingInvitation(null);
     }
+  };
+
+  // Group management functions
+  const handleCreateGroup = (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!newGroupName.trim()) {
+      alert('Please enter a group name');
+      return;
+    }
+    
+    if (selectedGroupMembers.size === 0) {
+      alert('Please select at least one member');
+      return;
+    }
+    
+    const members = approvers.filter(a => selectedGroupMembers.has(a.id));
+    
+    if (addApproverGroup) {
+      addApproverGroup({
+        name: newGroupName,
+        members
+      });
+    }
+    
+    // Reset form
+    setNewGroupName('');
+    setSelectedGroupMembers(new Set());
+    setShowCreateGroup(false);
+  };
+
+  const handleUpdateGroup = (groupId: string) => {
+    if (!updateApproverGroup) return;
+    
+    const members = approvers.filter(a => selectedGroupMembers.has(a.id));
+    updateApproverGroup(groupId, { members });
+    
+    setEditingGroupId(null);
+    setSelectedGroupMembers(new Set());
+  };
+
+  const handleDeleteGroup = (groupId: string, groupName: string) => {
+    if (confirm(`Delete group "${groupName}"?`) && removeApproverGroup) {
+      removeApproverGroup(groupId);
+    }
+  };
+
+  const startEditingGroup = (group: ApproverGroup) => {
+    setEditingGroupId(group.id);
+    setSelectedGroupMembers(new Set(group.members.map(m => m.id)));
+  };
+
+  const toggleGroupMember = (approverId: string) => {
+    const newSelected = new Set(selectedGroupMembers);
+    if (newSelected.has(approverId)) {
+      newSelected.delete(approverId);
+    } else {
+      newSelected.add(approverId);
+    }
+    setSelectedGroupMembers(newSelected);
   };
 
   // Generate initials from user's name
@@ -360,6 +431,238 @@ export function Profile({ approvers, addApprover, removeApprover, approvalThresh
           ) : null}
         </div>
       </div>
+
+      {/* Approver Groups Section */}
+      {addApproverGroup && (
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-gray-900 dark:text-white">Approver Groups</h2>
+            <button
+              onClick={() => {
+                setShowCreateGroup(true);
+                setSelectedGroupMembers(new Set());
+              }}
+              className="bg-[#9E89FF] text-white p-2 rounded-full hover:bg-[#8B76F0] transition-colors shadow-md"
+              title="Create group"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+          </div>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">Create groups of approvers for faster request submissions</p>
+          
+          {/* Show Groups Count and Toggle Button */}
+          {approverGroups.length > 0 && !showGroupsList && (
+            <button
+              onClick={() => setShowGroupsList(true)}
+              className="w-full bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm border border-gray-200 dark:border-gray-700 hover:border-[#9E89FF] transition-colors flex items-center justify-between"
+            >
+              <div className="flex items-center gap-3">
+                <UsersRound className="w-5 h-5 text-[#9E89FF]" />
+                <span className="text-gray-900 dark:text-white">{approverGroups.length} Group{approverGroups.length !== 1 ? 's' : ''}</span>
+              </div>
+              <ChevronDown className="w-5 h-5 text-gray-400" />
+            </button>
+          )}
+          
+          {/* Create Group Form */}
+          {showCreateGroup && (
+            <form onSubmit={handleCreateGroup} className="bg-purple-50 dark:bg-gray-800 border border-purple-200 dark:border-purple-800 rounded-xl p-4 mb-4 space-y-3">
+              <input
+                type="text"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                placeholder="Group name (e.g., Family, Work Team)"
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E89FF] bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+              />
+              
+              <div>
+                <p className="text-gray-700 dark:text-gray-300 text-sm mb-2">Select members:</p>
+                {approvers.length === 0 ? (
+                  <p className="text-gray-500 dark:text-gray-500 text-sm">No partners available. Add partners first.</p>
+                ) : (
+                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                    {approvers.map(approver => (
+                      <button
+                        key={approver.id}
+                        type="button"
+                        onClick={() => toggleGroupMember(approver.id)}
+                        className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors ${
+                          selectedGroupMembers.has(approver.id)
+                            ? 'bg-[#9E89FF] text-white'
+                            : 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-600'
+                        }`}
+                      >
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                          selectedGroupMembers.has(approver.id) ? 'bg-white/20' : 'bg-[#9E89FF]'
+                        }`}>
+                          <span className={selectedGroupMembers.has(approver.id) ? 'text-white text-xs' : 'text-white text-xs'}>
+                            {approver.avatar}
+                          </span>
+                        </div>
+                        <div className="flex-1 text-left">
+                          <p className="text-sm font-medium">{approver.name}</p>
+                          <p className={`text-xs ${selectedGroupMembers.has(approver.id) ? 'text-white/70' : 'text-gray-500 dark:text-gray-400'}`}>
+                            {approver.role === 'approver' ? 'Can Approve' : 'View Only'}
+                          </p>
+                        </div>
+                        {selectedGroupMembers.has(approver.id) && (
+                          <Check className="w-5 h-5" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={approvers.length === 0}
+                  className="flex-1 bg-[#9E89FF] text-white py-2 rounded-lg hover:bg-[#8B76F0] transition-colors disabled:opacity-50"
+                >
+                  Create Group
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCreateGroup(false);
+                    setNewGroupName('');
+                    setSelectedGroupMembers(new Set());
+                  }}
+                  className="flex-1 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+          
+          {/* Groups List */}
+          <div className="space-y-3">
+            {approverGroups.length === 0 && !showCreateGroup ? (
+              <div className="text-center p-8 bg-gray-50 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+                <UsersRound className="w-12 h-12 text-gray-400 dark:text-gray-500 mx-auto mb-3" />
+                <p className="text-gray-600 dark:text-gray-400">No groups created yet</p>
+                <p className="text-gray-500 dark:text-gray-500 text-sm">Click the + button to create a group</p>
+              </div>
+            ) : showGroupsList ? (
+              <>
+                {approverGroups.map(group => {
+                  const isEditing = editingGroupId === group.id;
+                  const approverCount = group.members.filter(m => m.role === 'approver').length;
+                  
+                  return (
+                    <div key={group.id} className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm border border-gray-200 dark:border-gray-700">
+                      {isEditing ? (
+                        // Edit mode
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h3 className="font-medium text-gray-900 dark:text-white">{group.name}</h3>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleUpdateGroup(group.id)}
+                                className="p-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                              >
+                                <Check className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setEditingGroupId(null);
+                                  setSelectedGroupMembers(new Set());
+                                }}
+                                className="p-2 bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="space-y-2 max-h-40 overflow-y-auto">
+                            {approvers.map(approver => (
+                              <button
+                                key={approver.id}
+                                type="button"
+                                onClick={() => toggleGroupMember(approver.id)}
+                                className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors ${
+                                  selectedGroupMembers.has(approver.id)
+                                    ? 'bg-[#9E89FF] text-white'
+                                    : 'bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-600'
+                                }`}
+                              >
+                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                                  selectedGroupMembers.has(approver.id) ? 'bg-white/20' : 'bg-[#9E89FF]'
+                                }`}>
+                                  <span className="text-white text-xs">{approver.avatar}</span>
+                                </div>
+                                <span className="text-sm">{approver.name}</span>
+                                {selectedGroupMembers.has(approver.id) && (
+                                  <Check className="w-4 h-4 ml-auto" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        // View mode
+                        <div>
+                          <div className="flex items-center gap-3 mb-3">
+                            <div className="w-12 h-12 bg-[#9E89FF] rounded-full flex items-center justify-center">
+                              <UsersRound className="w-6 h-6 text-white" />
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-gray-900 dark:text-white font-medium">{group.name}</p>
+                              <p className="text-gray-500 dark:text-gray-400 text-sm">
+                                {group.members.length} member{group.members.length !== 1 ? 's' : ''} • {approverCount} approver{approverCount !== 1 ? 's' : ''}
+                              </p>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => startEditingGroup(group)}
+                                className="p-2 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteGroup(group.id, group.name)}
+                                className="p-2 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                          
+                          {/* Member avatars */}
+                          <div className="flex flex-wrap gap-2">
+                            {group.members.slice(0, 5).map(member => (
+                              <div
+                                key={member.id}
+                                className="w-8 h-8 bg-gray-200 dark:bg-gray-600 rounded-full flex items-center justify-center text-gray-600 dark:text-gray-300 text-xs"
+                                title={member.name}
+                              >
+                                {member.avatar}
+                              </div>
+                            ))}
+                            {group.members.length > 5 && (
+                              <div className="w-8 h-8 bg-gray-200 dark:bg-gray-600 rounded-full flex items-center justify-center text-gray-600 dark:text-gray-300 text-xs">
+                                +{group.members.length - 5}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={() => setShowGroupsList(false)}
+                  className="w-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 py-3 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                >
+                  Hide Groups
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
 
       {/* Contact Picker Modal */}
       {showContactPicker && (

@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Plus, TrendingUp, Clock, CheckCircle, XCircle, Wallet, UserPlus, Upload, MessageCircle, Bell, Search, X, UserCheck, Eye, Loader2 } from 'lucide-react';
-import { MoneyRequest, Approver, RequestStatus } from '../App';
+import { MoneyRequest, Approver, ApproverGroup, RequestStatus } from '../App';
 import { NewRequestModal } from './NewRequestModal';
 import { StatCard } from './StatCard';
 import { searchUsers } from '../utils/api';
 
 interface DashboardProps {
   requests: MoneyRequest[];
-  addRequest: (request: Omit<MoneyRequest, 'id'>, selectedApprovers?: Approver[]) => void;
+  addRequest: (request: Omit<MoneyRequest, 'id'>, selectedApprovers?: Approver[], selectedGroups?: ApproverGroup[]) => void;
   approvers: Approver[];
+  approverGroups?: ApproverGroup[];
   walletBalance: number;
   onNavigateToProfile: () => void;
   onNavigateToMessages?: () => void;
@@ -30,7 +31,7 @@ interface SearchResult {
 
 const SEARCH_DELAY_SECONDS = 2;
 
-export function Dashboard({ requests, addRequest, approvers, walletBalance, onNavigateToProfile, onNavigateToMessages, onNavigateToNotifications, unreadNotificationsCount = 0, onNavigateToReview, onNavigateToRequests, capturedImage, onClearCapturedImage, currentUser, onSendFriendRequest }: DashboardProps) {
+export function Dashboard({ requests, addRequest, approvers, approverGroups = [], walletBalance, onNavigateToProfile, onNavigateToMessages, onNavigateToNotifications, unreadNotificationsCount = 0, onNavigateToReview, onNavigateToRequests, capturedImage, onClearCapturedImage, currentUser, onSendFriendRequest }: DashboardProps) {
   const [showNewRequest, setShowNewRequest] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -407,6 +408,7 @@ export function Dashboard({ requests, addRequest, approvers, walletBalance, onNa
           onClose={() => setShowNewRequest(false)}
           onSubmit={addRequest}
           approvers={approvers}
+          approverGroups={approverGroups}
           capturedImage={capturedImage}
           onClearCapturedImage={onClearCapturedImage}
         />

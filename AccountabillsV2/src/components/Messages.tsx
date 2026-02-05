@@ -399,13 +399,34 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
   }, [selectedGroup]);
 
   const addMemberToGroup = async (approver: Approver) => {
-    if (!selectedGroup) return;
+    console.log('addMemberToGroup called:', { approver, selectedGroupId: selectedGroup?.id });
+    // #region agent log
+    fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup',message:'Function called',data:{approver:{id:approver.id,userId:approver.userId,name:approver.name},selectedGroupId:selectedGroup?.id},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    if (!selectedGroup || !approver.userId) {
+      console.log('Early return:', { hasSelectedGroup: !!selectedGroup, hasUserId: !!approver.userId });
+      // #region agent log
+      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:earlyReturn',message:'Early return - missing data',data:{hasSelectedGroup:!!selectedGroup,hasUserId:!!approver.userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      return;
+    }
     
-    // Check if already a member
-    if (selectedGroup.members.some(m => m.user_id === approver.id)) return;
+    // Check if already a member (compare with userId, not friend record id)
+    if (selectedGroup.members.some(m => m.user_id === approver.userId)) {
+      // #region agent log
+      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:alreadyMember',message:'Already a member',data:{userId:approver.userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
+      return;
+    }
     
     try {
-      await apiAddGroupMember(selectedGroup.id, approver.id);
+      // #region agent log
+      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:beforeApi',message:'Calling API',data:{groupId:selectedGroup.id,userId:approver.userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
+      await apiAddGroupMember(selectedGroup.id, approver.userId);
+      // #region agent log
+      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:success',message:'API call succeeded',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       await fetchGroups();
       // Update selected group with new member
       const updatedGroups = await getGroups();
@@ -414,7 +435,10 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
         setSelectedGroup(updatedGroup);
       }
       setShowAddMembers(false);
-    } catch (error) {
+    } catch (error: any) {
+      // #region agent log
+      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:error',message:'API call failed',data:{error:error?.message||String(error)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       console.error('Failed to add member:', error);
     }
   };
@@ -478,8 +502,25 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
 
   // Get friends that are not already in the selected group
   const availableFriendsForGroup = selectedGroup 
-    ? approvers.filter(a => !selectedGroup.members.some(m => m.user_id === a.id))
+    ? approvers.filter(a => a.userId && !selectedGroup.members.some(m => m.user_id === a.userId))
     : [];
+  
+  // Check if current user is admin of the selected group
+  const isGroupAdmin = selectedGroup 
+    ? selectedGroup.members.some(m => m.user_id === currentUserId && m.role === 'admin')
+    : false;
+  
+  // Debug: log admin status when group is selected
+  useEffect(() => {
+    if (selectedGroup) {
+      console.log('Group Admin Check:', {
+        currentUserId,
+        members: selectedGroup.members.map(m => ({ user_id: m.user_id, role: m.role })),
+        isGroupAdmin,
+        availableFriends: availableFriendsForGroup.map(a => ({ name: a.name, userId: a.userId }))
+      });
+    }
+  }, [selectedGroup, currentUserId, isGroupAdmin, availableFriendsForGroup]);
 
   // Group Chat View
   if (activeGroupChat) {
@@ -580,6 +621,87 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
             </button>
           </div>
         </form>
+
+        {/* Group Details Modal - also rendered in group chat view */}
+        {showGroupDetails && selectedGroup && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end justify-center z-50">
+            <div className="bg-white dark:bg-gray-900 rounded-t-3xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+              <div className="sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 p-4 flex items-center justify-between z-10">
+                <button onClick={() => { setShowGroupDetails(false); setSelectedGroup(null); fetchGroups(); }} className="text-[#9E89FF] font-medium">Done</button>
+                <h3 className="text-gray-900 dark:text-white font-semibold">Group Info</h3>
+                <div className="w-12" />
+              </div>
+              <div className="flex flex-col items-center py-6 px-4 border-b border-gray-200 dark:border-gray-800">
+                <GroupAvatar avatarUrl={selectedGroup.avatar_url} size="lg" className="mb-4" />
+                <p className="text-xl font-semibold text-gray-900 dark:text-white">{selectedGroup.name}</p>
+                <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">{selectedGroup.members.length} participants</p>
+              </div>
+              <div className="p-4 relative z-0">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-gray-900 dark:text-white font-medium">Members</p>
+                  {isGroupAdmin && availableFriendsForGroup.length > 0 && (
+                    <button onClick={() => { 
+                      console.log('Add button clicked in chat view!'); 
+                      setShowGroupDetails(false); // Close group details first
+                      setShowAddMembers(true); 
+                    }} className="text-[#9E89FF] text-sm font-medium flex items-center gap-1 z-10 relative cursor-pointer">
+                      <Plus className="w-4 h-4" />Add
+                    </button>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  {selectedGroup.members.map((member) => {
+                    const memberName = member.profile?.name || 'Unknown';
+                    return (
+                      <div key={member.id} className="bg-gray-50 dark:bg-gray-800 rounded-xl p-4 flex items-center gap-3">
+                        <div className="w-10 h-10 bg-[#9E89FF] rounded-full flex items-center justify-center text-white text-sm font-medium">
+                          {member.profile?.avatar || memberName.charAt(0)}
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-gray-900 dark:text-white">{memberName}</p>
+                          {member.role === 'admin' && <span className="text-xs text-[#9E89FF]">Admin</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Add Members Modal - also rendered in group chat view */}
+        {showAddMembers && selectedGroup && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]" onClick={(e) => { if (e.target === e.currentTarget) { setShowAddMembers(false); setShowGroupDetails(true); } }}>
+            <div className="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-md mx-4 p-6 max-h-[70vh] overflow-y-auto shadow-2xl">
+              <div className="flex items-center justify-between mb-4">
+                <button onClick={() => { setShowAddMembers(false); setShowGroupDetails(true); }} className="text-[#9E89FF] font-medium">Cancel</button>
+                <h3 className="text-gray-900 dark:text-white font-semibold">Add Members</h3>
+                <div className="w-12" />
+              </div>
+              <p className="text-gray-500 dark:text-gray-400 text-sm mb-4">Select a friend to add to the group</p>
+              {availableFriendsForGroup.length === 0 ? (
+                <div className="text-center py-8 bg-gray-50 dark:bg-gray-800 rounded-xl">
+                  <Users className="w-10 h-10 text-gray-400 mx-auto mb-2" />
+                  <p className="text-gray-500 dark:text-gray-400 text-sm">All friends are already in this group</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {availableFriendsForGroup.map((approver) => (
+                    <button key={approver.id} onClick={() => addMemberToGroup(approver)} className="w-full bg-gray-50 dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-gray-700 rounded-xl p-4 flex items-center gap-3 transition-colors border border-transparent hover:border-[#9E89FF]">
+                      <div className="w-12 h-12 bg-[#9E89FF] rounded-full flex items-center justify-center text-white"><span>{approver.avatar}</span></div>
+                      <div className="flex-1 text-left">
+                        <p className="text-gray-900 dark:text-white">{approver.name}</p>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${approver.role === 'approver' ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300' : 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'}`}>{approver.role === 'approver' ? 'Approver' : 'Viewer'}</span>
+                      </div>
+                      <Plus className="w-5 h-5 text-[#9E89FF]" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -988,7 +1110,7 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end justify-center z-50">
           <div className="bg-white dark:bg-gray-900 rounded-t-3xl w-full max-w-md max-h-[90vh] overflow-y-auto">
             {/* Header */}
-            <div className="sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 p-4 flex items-center justify-between">
+            <div className="sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 p-4 flex items-center justify-between z-10">
               <button 
                 onClick={() => {
                   setShowGroupDetails(false);
@@ -1051,13 +1173,17 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
             </div>
             
             {/* Members Section */}
-            <div className="p-4">
+            <div className="p-4 relative z-0">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-gray-900 dark:text-white font-medium">Members</p>
-                {availableFriendsForGroup.length > 0 && (
+                {isGroupAdmin && availableFriendsForGroup.length > 0 && (
                   <button
-                    onClick={() => setShowAddMembers(true)}
-                    className="text-[#9E89FF] text-sm font-medium flex items-center gap-1"
+                    onClick={() => {
+                      console.log('Add button clicked!');
+                      setShowGroupDetails(false); // Close group details first
+                      setShowAddMembers(true);
+                    }}
+                    className="text-[#9E89FF] text-sm font-medium flex items-center gap-1 z-10 relative cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
                     Add
@@ -1118,13 +1244,20 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
       )}
 
       {/* Add Members Modal */}
+      {console.log('Add Members Modal check:', { showAddMembers, hasSelectedGroup: !!selectedGroup })}
       {showAddMembers && selectedGroup && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end justify-center z-[60]">
-          <div className="bg-white dark:bg-gray-900 rounded-t-3xl w-full max-w-md p-6 max-h-[70vh] overflow-y-auto">
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]"
+          onClick={(e) => {
+            // Close when clicking backdrop and re-open group details
+            if (e.target === e.currentTarget) { setShowAddMembers(false); setShowGroupDetails(true); }
+          }}
+        >
+          <div className="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-md mx-4 p-6 max-h-[70vh] overflow-y-auto shadow-2xl">
             {/* Header */}
             <div className="flex items-center justify-between mb-4">
               <button 
-                onClick={() => setShowAddMembers(false)} 
+                onClick={() => { setShowAddMembers(false); setShowGroupDetails(true); }} 
                 className="text-[#9E89FF] font-medium"
               >
                 Cancel

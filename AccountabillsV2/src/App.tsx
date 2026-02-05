@@ -77,6 +77,13 @@ export interface Approver {
   role: 'approver' | 'viewer';
 }
 
+export interface ApproverGroup {
+  id: string;
+  name: string;
+  members: Approver[];
+  createdAt: string;
+}
+
 export interface FeedItem {
   id: string;
   type: 'submitted' | 'approved' | 'rejected' | 'comment';
@@ -159,6 +166,7 @@ export default function App() {
 
   const [requests, setRequests] = useState<MoneyRequest[]>([]);
   const [approvers, setApprovers] = useState<Approver[]>([]);
+  const [approverGroups, setApproverGroups] = useState<ApproverGroup[]>([]);
   const [walletBalance, setWalletBalance] = useState(0);
   const [approvalThreshold, setApprovalThreshold] = useState(50);
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
@@ -395,7 +403,7 @@ export default function App() {
   const totalUnreadMessages = conversations.reduce((sum, conv) => sum + conv.unreadCount, 0);
   const unreadNotificationsCount = notifications.filter(n => !n.read).length;
 
-  const addRequest = async (request: Omit<MoneyRequest, 'id'>, selectedApprovers?: Approver[]) => {
+  const addRequest = async (request: Omit<MoneyRequest, 'id'>, selectedApprovers?: Approver[], selectedGroups?: ApproverGroup[]) => {
     try {
       // Transform UI format to API format
       // Use the full approver objects if provided, otherwise look them up by name
@@ -403,12 +411,33 @@ export default function App() {
         approvers.find(a => a.name === name)
       ).filter(Boolean) as Approver[];
 
+      // Collect all unique approvers from individuals and groups
+      const allApproversMap = new Map<string, Approver>();
+      
+      // Add individual approvers
+      approverObjects.forEach(approver => {
+        allApproversMap.set(approver.id, approver);
+      });
+      
+      // Add group members with approving rights
+      if (selectedGroups && selectedGroups.length > 0) {
+        selectedGroups.forEach(group => {
+          group.members.forEach(member => {
+            if (member.role === 'approver' && !allApproversMap.has(member.id)) {
+              allApproversMap.set(member.id, member);
+            }
+          });
+        });
+      }
+      
+      const allApprovers = Array.from(allApproversMap.values());
+
       const apiRequest = {
         amount: request.amount,
         description: request.description,
         category: request.category,
         imageUrl: request.imageUrl,
-        approvers: approverObjects.map(approver => ({
+        approvers: allApprovers.map(approver => ({
           userId: approver.id,
           name: approver.name,
           email: approver.email
@@ -434,23 +463,21 @@ export default function App() {
       };
       setFeedItems([feedItem, ...feedItems]);
 
-      // Create notifications for approvers
-      if (request.approvers && request.approvers.length > 0) {
-        request.approvers.forEach(approverName => {
-          if (approverName !== 'You') {
-            const notification: Notification = {
-              id: Date.now().toString() + '-notif-' + approverName,
-              type: 'approval_request',
-              title: 'New Approval Request',
-              message: `You have a new $${request.amount.toFixed(2)} request for ${request.description}`,
-              timestamp: new Date().toISOString(),
-              read: false,
-              requestId: uiRequest.id
-            };
-            setNotifications(prev => [notification, ...prev]);
-          }
-        });
-      }
+      // Create notifications for all approvers (individuals + group members with approving rights)
+      allApprovers.forEach(approver => {
+        if (approver.name !== 'You') {
+          const notification: Notification = {
+            id: Date.now().toString() + '-notif-' + approver.id,
+            type: 'approval_request',
+            title: 'New Approval Request',
+            message: `You have a new $${request.amount.toFixed(2)} request for ${request.description}`,
+            timestamp: new Date().toISOString(),
+            read: false,
+            requestId: uiRequest.id
+          };
+          setNotifications(prev => [notification, ...prev]);
+        }
+      });
     } catch (error) {
       console.error('Failed to create request:', error);
       // Fallback to local-only for now
@@ -644,11 +671,36 @@ export default function App() {
     try {
       await apiRemoveFriend(id);
       setApprovers(approvers.filter(a => a.id !== id));
+      // Also remove from any groups
+      setApproverGroups(groups => groups.map(g => ({
+        ...g,
+        members: g.members.filter(m => m.id !== id)
+      })));
     } catch (error) {
       console.error('Failed to remove approver:', error);
       // Still remove from local state
       setApprovers(approvers.filter(a => a.id !== id));
     }
+  };
+
+  // Group management functions
+  const addApproverGroup = (group: Omit<ApproverGroup, 'id' | 'createdAt'>) => {
+    const newGroup: ApproverGroup = {
+      ...group,
+      id: Date.now().toString(),
+      createdAt: new Date().toISOString()
+    };
+    setApproverGroups([...approverGroups, newGroup]);
+  };
+
+  const removeApproverGroup = (id: string) => {
+    setApproverGroups(approverGroups.filter(g => g.id !== id));
+  };
+
+  const updateApproverGroup = (id: string, updates: Partial<ApproverGroup>) => {
+    setApproverGroups(approverGroups.map(g => 
+      g.id === id ? { ...g, ...updates } : g
+    ));
   };
 
   // Send a friend request to another user
@@ -792,6 +844,7 @@ export default function App() {
           requests={requests}
           addRequest={addRequest}
           approvers={approvers}
+          approverGroups={approverGroups}
           walletBalance={walletBalance}
           onNavigateToProfile={() => setCurrentView('profile')}
           onNavigateToMessages={() => setCurrentView('messages')}
@@ -871,6 +924,10 @@ export default function App() {
           approvers={approvers}
           addApprover={addApprover}
           removeApprover={removeApprover}
+          approverGroups={approverGroups}
+          addApproverGroup={addApproverGroup}
+          removeApproverGroup={removeApproverGroup}
+          updateApproverGroup={updateApproverGroup}
           approvalThreshold={approvalThreshold}
           setApprovalThreshold={setApprovalThreshold}
           isDarkMode={isDarkMode}
@@ -909,6 +966,7 @@ export default function App() {
           requests={requests}
           addRequest={addRequest}
           approvers={approvers}
+          approverGroups={approverGroups}
           walletBalance={walletBalance}
           onNavigateToProfile={() => setCurrentView('profile')}
           onNavigateToMessages={() => setCurrentView('messages')}
