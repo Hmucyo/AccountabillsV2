@@ -1115,10 +1115,39 @@ export const getGroups = async (): Promise<GroupWithMembers[]> => {
       .order('created_at', { ascending: false })
       .limit(1);
 
+    // Get user's last read timestamp for this group
+    const { data: readStatus } = await supabase
+      .from('group_message_reads')
+      .select('last_read_at')
+      .eq('group_id', group.id)
+      .eq('user_id', user.id)
+      .single();
+
+    // Count unread messages (messages after last_read_at, excluding own messages)
+    let unreadCount = 0;
+    if (readStatus?.last_read_at) {
+      const { count } = await supabase
+        .from('group_messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('group_id', group.id)
+        .neq('sender_id', user.id)
+        .gt('created_at', readStatus.last_read_at);
+      unreadCount = count || 0;
+    } else {
+      // No read status means all messages (except own) are unread
+      const { count } = await supabase
+        .from('group_messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('group_id', group.id)
+        .neq('sender_id', user.id);
+      unreadCount = count || 0;
+    }
+
     return {
       ...group,
       members: membersWithProfiles,
-      lastMessage: lastMessages?.[0] || undefined
+      lastMessage: lastMessages?.[0] || undefined,
+      unreadCount
     };
   }));
 
@@ -1275,6 +1304,25 @@ export const getGroupMessages = async (
 
   if (error) throw error;
   return data || [];
+};
+
+// Mark group messages as read for current user
+export const markGroupMessagesAsRead = async (groupId: string): Promise<void> => {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  // Upsert the read status
+  const { error } = await supabase
+    .from('group_message_reads')
+    .upsert({
+      user_id: user.id,
+      group_id: groupId,
+      last_read_at: new Date().toISOString()
+    }, {
+      onConflict: 'user_id,group_id'
+    });
+
+  if (error) throw error;
 };
 
 // Send a message to a group

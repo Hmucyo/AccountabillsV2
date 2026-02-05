@@ -12,6 +12,7 @@ import {
   removeGroupMember as apiRemoveGroupMember,
   getGroupMessages,
   sendGroupMessage,
+  markGroupMessagesAsRead,
   subscribeToGroupMessages,
   supabase
 } from '../utils/api';
@@ -94,7 +95,7 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
     scrollToBottom();
   }, [groupMessages, messages, selectedConversation, scrollToBottom]);
 
-  // Subscribe to real-time group messages
+  // Subscribe to real-time group messages (for active chat)
   useEffect(() => {
     if (!activeGroupChat) return;
 
@@ -110,6 +111,72 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
       unsubscribe();
     };
   }, [activeGroupChat]);
+
+  // Subscribe to ALL group messages for unread badge updates
+  useEffect(() => {
+    if (!currentUserId || groups.length === 0) return;
+
+    const groupIds = groups.map(g => g.id);
+    
+    const channel = supabase
+      .channel('all_group_messages')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'group_messages'
+        },
+        async (payload) => {
+          const newMsg = payload.new as any;
+          // Check if this message is for a group the user is in
+          if (!groupIds.includes(newMsg.group_id)) return;
+          
+          // Update the group's lastMessage for preview
+          const isOwnMessage = newMsg.sender_id === currentUserId;
+          const isViewingThisGroup = activeGroupChat?.id === newMsg.group_id;
+          
+          // Get sender info for the preview
+          let senderInfo = { id: newMsg.sender_id, name: 'Someone' };
+          if (isOwnMessage) {
+            senderInfo.name = 'You';
+          } else {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('name')
+              .eq('id', newMsg.sender_id)
+              .single();
+            if (profile?.name) senderInfo.name = profile.name;
+          }
+          
+          setGroups(prev => prev.map(g => {
+            if (g.id !== newMsg.group_id) return g;
+            
+            return {
+              ...g,
+              // Update last message preview with sender info
+              lastMessage: {
+                id: newMsg.id,
+                group_id: newMsg.group_id,
+                sender_id: newMsg.sender_id,
+                content: newMsg.content,
+                created_at: newMsg.created_at,
+                sender: senderInfo
+              },
+              // Only increment unread if not own message and not viewing this group
+              unreadCount: (!isOwnMessage && !isViewingThisGroup) 
+                ? (g.unreadCount || 0) + 1 
+                : g.unreadCount
+            };
+          }));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUserId, groups.length, activeGroupChat?.id]);
 
   // Sort conversations by timestamp (latest first)
   const sortedConversations = [...conversations].sort((a, b) => 
@@ -164,6 +231,12 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
     try {
       const messages = await getGroupMessages(group.id);
       setGroupMessages(messages);
+      // Mark messages as read
+      await markGroupMessagesAsRead(group.id);
+      // Update local state to clear unread count
+      setGroups(prev => prev.map(g => 
+        g.id === group.id ? { ...g, unreadCount: 0 } : g
+      ));
     } catch (error) {
       console.error('Failed to load messages:', error);
     } finally {
@@ -673,11 +746,18 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
                         {group.lastMessage?.created_at ? getTimeAgo(group.lastMessage.created_at) : ''}
                       </span>
                     </div>
-                    <p className="text-gray-500 dark:text-gray-400 text-sm mb-1">
-                      {group.members.length} members
-                    </p>
-                    <p className="text-gray-600 dark:text-gray-400 text-sm truncate">
-                      {group.lastMessage?.content || 'Tap to start chatting'}
+                    <p className={`text-sm truncate ${group.unreadCount && group.unreadCount > 0 ? 'font-medium text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
+                      {group.lastMessage ? (
+                        <>
+                          <span className="font-medium">
+                            {group.lastMessage.sender?.name || 
+                             (group.lastMessage.sender_id === currentUserId ? 'You' : 'Someone')}:
+                          </span>{' '}
+                          {group.lastMessage.content}
+                        </>
+                      ) : (
+                        'Tap to start chatting'
+                      )}
                     </p>
                   </div>
                   <div
