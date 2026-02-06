@@ -35,11 +35,11 @@ export function NewRequestModal({
 
   const categories = ['Office', 'Software', 'Events', 'Entertainment', 'Travel', 'Equipment', 'Other'];
 
-  // Filter to only show approvers with approving rights
+  // Filter to only show approvers with approving rights for individuals
   const approversWithRights = approvers.filter(a => a.role === 'approver');
-  const groupsWithApprovers = approverGroups.filter(g => 
-    g.members.some(m => m.role === 'approver')
-  );
+  
+  // Show all groups, but we'll indicate which ones have approvers
+  const allGroups = approverGroups;
 
   const handleApproverToggle = (approverId: string) => {
     const newSelected = new Set(selectedApprovers);
@@ -74,6 +74,17 @@ export function NewRequestModal({
       return;
     }
 
+    // Check if at least one actual approver will receive the request
+    const selectedGroupObjects = approverGroups.filter(g => selectedGroups.has(g.id));
+    const hasApproverInGroups = selectedGroupObjects.some(g => 
+      g.members.some(m => m.role === 'approver')
+    );
+    
+    if (selectedApprovers.size === 0 && !hasApproverInGroups) {
+      alert('The selected group(s) have no members with approving rights. Please also select an individual approver or choose a group with approvers.');
+      return;
+    }
+
     if (!imagePreview) {
       alert('Please take or upload a picture of the item/receipt');
       return;
@@ -82,10 +93,8 @@ export function NewRequestModal({
     // Get the selected approver objects
     const selectedApproverObjects = approvers.filter(a => selectedApprovers.has(a.id));
     
-    // Get the selected group objects
-    const selectedGroupObjects = approverGroups.filter(g => selectedGroups.has(g.id));
-    
     // Collect all approver names (individuals + group members with approving rights)
+    // Note: selectedGroupObjects already declared above for validation
     const allApproverNames = new Set<string>();
     
     // Add individual approvers
@@ -386,15 +395,16 @@ export function NewRequestModal({
                 )
               ) : (
                 // Groups
-                groupsWithApprovers.length === 0 ? (
+                allGroups.length === 0 ? (
                   <div className="text-center p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
                     <p className="text-gray-600 dark:text-gray-400">No groups created yet.</p>
                     <p className="text-gray-500 dark:text-gray-500 text-sm mt-1">Create groups in your Profile.</p>
                   </div>
                 ) : (
-                  groupsWithApprovers.map(group => {
+                  allGroups.map(group => {
                     const isSelected = selectedGroups.has(group.id);
                     const approverCount = group.members.filter(m => m.role === 'approver').length;
+                    const hasNoApprovers = approverCount === 0;
                     return (
                       <button
                         key={group.id}
@@ -414,7 +424,7 @@ export function NewRequestModal({
                           {isSelected && <Check className="w-4 h-4 text-gray-800" />}
                         </div>
                         <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
-                          isSelected ? 'bg-[#9E89FF]' : 'bg-[#9E89FF]'
+                          hasNoApprovers ? 'bg-gray-400' : 'bg-[#9E89FF]'
                         }`}>
                           <UsersRound className="w-5 h-5 text-white" />
                         </div>
@@ -422,8 +432,11 @@ export function NewRequestModal({
                           <p className={`font-medium ${isSelected ? 'text-white' : 'text-gray-900 dark:text-white'}`}>
                             {group.name}
                           </p>
-                          <p className={`text-sm ${isSelected ? 'text-gray-300' : 'text-gray-500 dark:text-gray-400'}`}>
-                            {approverCount} approver{approverCount !== 1 ? 's' : ''} • {group.members.length} member{group.members.length !== 1 ? 's' : ''}
+                          <p className={`text-sm ${isSelected ? 'text-gray-300' : hasNoApprovers ? 'text-orange-500 dark:text-orange-400' : 'text-gray-500 dark:text-gray-400'}`}>
+                            {hasNoApprovers 
+                              ? `${group.members.length} viewer${group.members.length !== 1 ? 's' : ''} only (cannot approve)`
+                              : `${approverCount} approver${approverCount !== 1 ? 's' : ''} • ${group.members.length} member${group.members.length !== 1 ? 's' : ''}`
+                            }
                           </p>
                         </div>
                       </button>

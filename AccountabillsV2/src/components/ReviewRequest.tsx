@@ -5,29 +5,46 @@ import { MoneyRequest, RequestStatus } from '../App';
 interface ReviewRequestProps {
   request: MoneyRequest;
   onBack: () => void;
-  onReview: (requestId: string, status: 'approved' | 'rejected', comment: string, approver: string) => void;
+  onReview: (requestId: string, status: 'approved' | 'rejected', comment: string, approver: string) => Promise<void>;
 }
 
 export function ReviewRequest({ request, onBack, onReview }: ReviewRequestProps) {
   const [comment, setComment] = useState('');
   const [showError, setShowError] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleApprove = () => {
+  const handleApprove = async () => {
     if (!comment.trim()) {
       setShowError(true);
       return;
     }
-    onReview(request.id, 'approved', comment, 'You');
-    onBack();
+    setIsSubmitting(true);
+    try {
+      await onReview(request.id, 'approved', comment, 'You');
+      onBack();
+    } catch (error) {
+      // Error handling (alert) is done in onReview
+      // Don't navigate back if there was an error
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleDeny = () => {
+  const handleDeny = async () => {
     if (!comment.trim()) {
       setShowError(true);
       return;
     }
-    onReview(request.id, 'rejected', comment, 'You');
-    onBack();
+    setIsSubmitting(true);
+    try {
+      await onReview(request.id, 'rejected', comment, 'You');
+      onBack();
+    } catch (error) {
+      // Error handling (alert) is done in onReview
+      // Don't navigate back if there was an error
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -189,23 +206,34 @@ export function ReviewRequest({ request, onBack, onReview }: ReviewRequestProps)
             <>
               <button
                 onClick={handleApprove}
-                className="w-full bg-green-600 text-white py-4 rounded-xl hover:bg-green-700 transition-colors flex items-center justify-center gap-2 shadow-lg"
+                disabled={isSubmitting}
+                className="w-full bg-green-600 text-white py-4 rounded-xl hover:bg-green-700 transition-colors flex items-center justify-center gap-2 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <CheckCircle className="w-6 h-6" />
-                <span className="text-lg">Approve Request</span>
+                {isSubmitting ? (
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white" />
+                ) : (
+                  <CheckCircle className="w-6 h-6" />
+                )}
+                <span className="text-lg">{isSubmitting ? 'Processing...' : 'Approve Request'}</span>
               </button>
               
               <button
                 onClick={handleDeny}
-                className="w-full bg-red-600 text-white py-4 rounded-xl hover:bg-red-700 transition-colors flex items-center justify-center gap-2 shadow-lg"
+                disabled={isSubmitting}
+                className="w-full bg-red-600 text-white py-4 rounded-xl hover:bg-red-700 transition-colors flex items-center justify-center gap-2 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <XCircle className="w-6 h-6" />
-                <span className="text-lg">Deny Request</span>
+                {isSubmitting ? (
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white" />
+                ) : (
+                  <XCircle className="w-6 h-6" />
+                )}
+                <span className="text-lg">{isSubmitting ? 'Processing...' : 'Deny Request'}</span>
               </button>
 
               <button
                 onClick={onBack}
-                className="w-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 py-3 rounded-xl hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                disabled={isSubmitting}
+                className="w-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 py-3 rounded-xl hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>

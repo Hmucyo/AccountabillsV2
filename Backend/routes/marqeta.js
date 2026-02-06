@@ -144,13 +144,14 @@ router.post('/payment-requests', validateToken, async (req, res) => {
     }
 
     const senderMarqetaToken = await storageService.getUserMarqetaToken(userId);
+    const senderName = user.user_metadata?.name || userEmail;
 
     const requestId = uuidv4();
     const paymentRequest = {
       id: requestId,
       senderId: userId,
       senderEmail: userEmail,
-      senderName: user.user_metadata?.name || userEmail,
+      senderName: senderName,
       senderMarqetaToken: senderMarqetaToken,
       amount: parseFloat(amount),
       description: description || '',
@@ -171,6 +172,20 @@ router.post('/payment-requests', validateToken, async (req, res) => {
     };
 
     await storageService.createPaymentRequest(paymentRequest);
+
+    // Create notifications for approvers (using service role key - bypasses RLS)
+    for (const approver of approvers) {
+      // Don't notify the sender if they're in the approvers list
+      if (approver.userId !== userId) {
+        await storageService.createNotification({
+          userId: approver.userId,
+          type: 'approval_request',
+          title: 'New Approval Request',
+          message: `${senderName} submitted a $${parseFloat(amount).toFixed(2)} request for ${description || 'expense'}`,
+          requestId: requestId
+        });
+      }
+    }
 
     res.json({ success: true, data: paymentRequest });
   } catch (error) {
@@ -237,7 +252,15 @@ router.post('/payment-requests/:id/approve', validateToken, async (req, res) => 
     }
 
     if (paymentRequest.status !== 'pending') {
-      return res.status(400).json({ success: false, error: 'Payment request already processed' });
+      // Include information about who processed it
+      const processedBy = paymentRequest.rejectedBy?.name || 
+        (paymentRequest.approvedBy?.length ? paymentRequest.approvedBy.map(a => a.name).join(', ') : 'someone');
+      return res.status(400).json({ 
+        success: false, 
+        error: `Payment request already ${paymentRequest.status} by ${processedBy}`,
+        status: paymentRequest.status,
+        processedBy
+      });
     }
 
     // Check if user is an approver
@@ -286,6 +309,21 @@ router.post('/payment-requests/:id/approve', validateToken, async (req, res) => 
 
     await storageService.updatePaymentRequest(req.params.id, paymentRequest);
 
+    // Notify the request submitter that their request was approved
+    const approverName = user.user_metadata?.name || user.email || 'Someone';
+    try {
+      await storageService.createNotification({
+        userId: paymentRequest.senderId,
+        type: 'request_reviewed',
+        title: 'Request Approved',
+        message: `${approverName} approved your $${paymentRequest.amount.toFixed(2)} request for ${paymentRequest.description}`,
+        requestId: req.params.id
+      });
+    } catch (notifError) {
+      console.error('Error creating approval notification:', notifError);
+      // Don't fail the request if notification fails
+    }
+
     res.json({ success: true, data: paymentRequest });
   } catch (error) {
     console.error('Error approving payment request:', error.response?.data || error.message);
@@ -309,7 +347,15 @@ router.post('/payment-requests/:id/reject', validateToken, async (req, res) => {
     }
 
     if (paymentRequest.status !== 'pending') {
-      return res.status(400).json({ success: false, error: 'Payment request already processed' });
+      // Include information about who processed it
+      const processedBy = paymentRequest.rejectedBy?.name || 
+        (paymentRequest.approvedBy?.length ? paymentRequest.approvedBy.map(a => a.name).join(', ') : 'someone');
+      return res.status(400).json({ 
+        success: false, 
+        error: `Payment request already ${paymentRequest.status} by ${processedBy}`,
+        status: paymentRequest.status,
+        processedBy
+      });
     }
 
     // Check if user is an approver
@@ -319,10 +365,11 @@ router.post('/payment-requests/:id/reject', validateToken, async (req, res) => {
     }
 
     // One rejection = whole request rejected
+    const rejecterName = user.user_metadata?.name || user.email || userId;
     paymentRequest.status = 'rejected';
     paymentRequest.rejectedBy = {
       userId,
-      name: user.user_metadata?.name || userId,
+      name: rejecterName,
       rejectedAt: new Date().toISOString()
     };
     paymentRequest.notes = notes || null;
@@ -330,6 +377,20 @@ router.post('/payment-requests/:id/reject', validateToken, async (req, res) => {
     paymentRequest.updatedAt = new Date().toISOString();
 
     await storageService.updatePaymentRequest(req.params.id, paymentRequest);
+
+    // Notify the request submitter that their request was rejected
+    try {
+      await storageService.createNotification({
+        userId: paymentRequest.senderId,
+        type: 'request_reviewed',
+        title: 'Request Rejected',
+        message: `${rejecterName} rejected your $${paymentRequest.amount.toFixed(2)} request for ${paymentRequest.description}`,
+        requestId: req.params.id
+      });
+    } catch (notifError) {
+      console.error('Error creating rejection notification:', notifError);
+      // Don't fail the request if notification fails
+    }
 
     res.json({ success: true, data: paymentRequest });
   } catch (error) {

@@ -136,6 +136,118 @@ router.get('/me', validateToken, async (req, res) => {
   }
 });
 
+// ============================================================
+// BOOT ENDPOINT - Single call for all app initialization data
+// ============================================================
+// Consolidates:
+//   - GET /api/users/balance
+//   - GET /api/users/transactions
+//   - GET /api/users/card
+//   - GET /api/marqeta/payment-requests?filter=mine
+//   - GET /api/marqeta/payment-requests?filter=to-approve
+// ============================================================
+router.get('/boot', validateToken, async (req, res) => {
+  try {
+    const { userId } = req;
+    const marqetaToken = await storageService.getUserMarqetaToken(userId);
+
+    if (!marqetaToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'User not initialized with Marqeta'
+      });
+    }
+
+    // Fetch all data in parallel
+    const [balanceResult, transactionsResult, cardResult, requestsResult] = await Promise.allSettled([
+      // 1. Balance
+      marqetaService.getGPABalance(marqetaToken),
+      
+      // 2. Transactions
+      marqetaService.getTransactions(marqetaToken).catch(err => {
+        // Return empty array if no transactions
+        if (err.response?.status === 404) return { data: [] };
+        throw err;
+      }),
+      
+      // 3. Card
+      (async () => {
+        try {
+          const cardsResponse = await marqetaService.getCardsForUser(marqetaToken);
+          const cards = cardsResponse.data || [];
+          if (cards.length === 0) return { hasCard: false, card: null };
+          
+          const activeCard = cards.find(c => c.state === 'ACTIVE') || cards[0];
+          const cardDetails = await marqetaService.getCardDetails(activeCard.token);
+          
+          return {
+            hasCard: true,
+            card: {
+              token: cardDetails.token,
+              pan: cardDetails.pan || null,
+              lastFour: cardDetails.last_four,
+              expiration: cardDetails.expiration,
+              expirationTime: cardDetails.expiration_time,
+              cvv: cardDetails.cvv_number || null,
+              state: cardDetails.state,
+              cardProductToken: cardDetails.card_product_token,
+              createdTime: cardDetails.created_time
+            }
+          };
+        } catch (err) {
+          if (err.response?.status === 404) return { hasCard: false, card: null };
+          throw err;
+        }
+      })(),
+      
+      // 4. Payment requests (both mine and to-approve in single optimized query)
+      storageService.getUserPaymentRequests(userId)
+    ]);
+
+    // Extract results, handling failures gracefully
+    const balance = balanceResult.status === 'fulfilled' 
+      ? balanceResult.value?.gpa?.available_balance || 0 
+      : 0;
+    
+    const transactions = transactionsResult.status === 'fulfilled'
+      ? transactionsResult.value?.data || []
+      : [];
+    
+    const card = cardResult.status === 'fulfilled'
+      ? cardResult.value
+      : { hasCard: false, card: null };
+    
+    const requests = requestsResult.status === 'fulfilled'
+      ? requestsResult.value
+      : { myRequests: [], toApprove: [] };
+
+    // Log any errors for debugging
+    [balanceResult, transactionsResult, cardResult, requestsResult].forEach((result, i) => {
+      if (result.status === 'rejected') {
+        const names = ['balance', 'transactions', 'card', 'requests'];
+        console.error(`Boot: ${names[i]} fetch failed:`, result.reason?.message);
+      }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        balance,
+        transactions,
+        card,
+        myRequests: requests.myRequests,
+        requestsToApprove: requests.toApprove
+      }
+    });
+  } catch (error) {
+    console.error('Error in boot endpoint:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Get user's wallet balance
 router.get('/balance', validateToken, async (req, res) => {
   try {

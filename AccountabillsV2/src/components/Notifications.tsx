@@ -45,11 +45,12 @@ export function Notifications({ notifications, onBack, onMarkAsRead, onMarkAllAs
   };
 
   // Check if this is a pending friend request (not accepted/rejected already)
+  // Note: We check title === 'New Friend Request' because accepted requests have title 'Friend Request Accepted'
+  // and rejected requests have title 'Friend Request Declined'
   const isPendingFriendRequest = (notification: Notification) => {
     return notification.type === 'friend_request' && 
            notification.approverId && 
-           notification.title === 'New Friend Request' &&
-           !notification.read;
+           notification.title === 'New Friend Request';
   };
 
   const getNotificationIcon = (type: Notification['type']) => {
@@ -134,11 +135,14 @@ export function Notifications({ notifications, onBack, onMarkAsRead, onMarkAllAs
               <div
                 key={notification.id}
                 onClick={() => {
-                  if (!notification.read && !isPendingFriendRequest(notification)) {
-                    onMarkAsRead(notification.id);
-                  }
+                  // Navigate first (if applicable), then mark as read
+                  // This ensures navigation happens before any re-renders from marking as read
                   if (notification.requestId && onNavigateToRequest) {
                     onNavigateToRequest(notification.requestId);
+                  }
+                  // Mark as read after navigation (non-blocking)
+                  if (!notification.read && !isPendingFriendRequest(notification)) {
+                    onMarkAsRead(notification.id);
                   }
                 }}
                 className={`p-4 rounded-xl border transition-all ${

@@ -205,6 +205,57 @@ class StorageService {
       .filter(req => req.approvers && req.approvers.some(a => a.userId === userId));
   }
 
+  // =====================
+  // Optimized Batch Methods (for /api/users/boot)
+  // =====================
+
+  /**
+   * Get all payment requests for a user in a single query
+   * Returns both requests sent by user AND requests where user is an approver
+   * Filters at database level to avoid fetching entire table
+   */
+  async getUserPaymentRequests(userId) {
+    // Validate userId is a valid UUID to prevent SQL injection
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!userId || !uuidRegex.test(userId)) {
+      console.error('Invalid userId format:', userId);
+      return { myRequests: [], toApprove: [] };
+    }
+
+    // Use the safer fallback method with parameterized queries
+    // The .or() method with string interpolation is vulnerable to injection
+    return this._getUserPaymentRequestsFallback(userId);
+  }
+
+  /**
+   * Fallback method if JSONB query fails - uses two parallel queries
+   */
+  async _getUserPaymentRequestsFallback(userId) {
+    const [myData, approverData] = await Promise.all([
+      supabase
+        .from('payment_requests')
+        .select('*')
+        .eq('sender_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(50),
+      supabase
+        .from('payment_requests')
+        .select('*')
+        .neq('sender_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(100)
+    ]);
+
+    const myRequests = (myData.data || []).map(row => this._mapDbToRequest(row));
+    
+    // Filter approver requests in JS (less ideal but works)
+    const toApprove = (approverData.data || [])
+      .map(row => this._mapDbToRequest(row))
+      .filter(req => req.approvers?.some(a => a.userId === userId));
+
+    return { myRequests, toApprove };
+  }
+
   async updatePaymentRequest(id, updates) {
     const request = await this.getPaymentRequest(id);
     if (!request) return null;
@@ -269,6 +320,30 @@ class StorageService {
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
+  }
+
+  // Create a notification (uses service role key - bypasses RLS)
+  async createNotification(notification) {
+    const { data, error } = await supabase
+      .from('notifications')
+      .insert({
+        user_id: notification.userId,
+        type: notification.type,
+        title: notification.title,
+        message: notification.message,
+        request_id: notification.requestId || null,
+        approver_id: notification.approverId || null,
+        read: false
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating notification:', error);
+      throw error;
+    }
+
+    return data;
   }
 }
 

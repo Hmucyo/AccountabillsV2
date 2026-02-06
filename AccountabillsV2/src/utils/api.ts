@@ -13,6 +13,12 @@ export const supabase = createClient(
   publicAnonKey
 );
 
+// UUID validation helper to prevent SQL injection in .or() queries
+const isValidUUID = (id: string): boolean => {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return typeof id === 'string' && uuidRegex.test(id);
+};
+
 // Store access token
 let accessToken: string | null = null;
 
@@ -150,6 +156,21 @@ export const initializeUser = async (firstName?: string, lastName?: string) => {
     method: 'POST',
     body: JSON.stringify({ firstName, lastName }),
   });
+  return response.data;
+};
+
+// ===== BOOT API (Optimized single-call initialization) =====
+// Consolidates: balance, transactions, card, myRequests, requestsToApprove
+export interface BootData {
+  balance: number;
+  transactions: any[];
+  card: { hasCard: boolean; card: CardData | null };
+  myRequests: any[];
+  requestsToApprove: any[];
+}
+
+export const boot = async (): Promise<BootData> => {
+  const response = await fetchWithAuth('/users/boot');
   return response.data;
 };
 
@@ -429,6 +450,38 @@ export const removeFriend = async (friendId: string): Promise<void> => {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
+  // First, get the friend record to know who we're removing
+  const { data: friendRecord, error: fetchError } = await supabase
+    .from('friends')
+    .select('friend_id, friend_name')
+    .eq('id', friendId)
+    .eq('user_id', user.id)
+    .single();
+
+  if (fetchError) throw fetchError;
+  if (!friendRecord) throw new Error('Friend record not found');
+
+  // Get current user's name for the notification
+  const { data: profileData } = await supabase
+    .from('profiles')
+    .select('name')
+    .eq('id', user.id)
+    .single();
+  
+  const removerName = profileData?.name || user.email?.split('@')[0] || 'Someone';
+
+  // Create notification for the person being removed
+  await supabase
+    .from('notifications')
+    .insert({
+      user_id: friendRecord.friend_id,
+      type: 'friend_request', // Using existing type
+      title: 'Removed as Accountability Partner',
+      message: `${removerName} has removed you as their accountability partner`,
+      read: false
+    });
+
+  // Now delete the friend record
   const { error } = await supabase
     .from('friends')
     .delete()
@@ -634,18 +687,52 @@ export const getPendingFriendRequests = async (): Promise<Friend[]> => {
 };
 
 export const searchUsers = async (searchTerm: string): Promise<Array<{ id: string; email: string; name: string }>> => {
-  // Search in the profiles table with database-side filtering (optimized with indexes)
-  const searchPattern = `%${searchTerm}%`;
+  // Sanitize search term to prevent SQL injection
+  // Remove/escape special characters that could break Supabase filter syntax
+  const sanitized = searchTerm
+    .replace(/[%_\\]/g, '\\$&')  // Escape SQL wildcards
+    .replace(/[(),.'"`]/g, '')   // Remove filter syntax characters
+    .trim()
+    .slice(0, 100);  // Limit length
   
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, email, name, username')
-    .or(`email.ilike.${searchPattern},name.ilike.${searchPattern},username.ilike.${searchPattern}`)
-    .limit(20);
+  if (!sanitized) {
+    return [];
+  }
 
-  if (error) throw error;
+  const searchPattern = `%${sanitized}%`;
+  
+  // Use separate queries to avoid .or() string interpolation vulnerability
+  // This is safer than interpolating user input into .or() filter string
+  const [emailResults, nameResults, usernameResults] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('id, email, name, username')
+      .ilike('email', searchPattern)
+      .limit(10),
+    supabase
+      .from('profiles')
+      .select('id, email, name, username')
+      .ilike('name', searchPattern)
+      .limit(10),
+    supabase
+      .from('profiles')
+      .select('id, email, name, username')
+      .ilike('username', searchPattern)
+      .limit(10)
+  ]);
 
-  return (data || []).map(profile => ({
+  // Combine and dedupe results
+  const allResults = [
+    ...(emailResults.data || []),
+    ...(nameResults.data || []),
+    ...(usernameResults.data || [])
+  ];
+  
+  const uniqueResults = allResults.filter((profile, index, self) =>
+    index === self.findIndex(p => p.id === profile.id)
+  ).slice(0, 20);
+
+  return uniqueResults.map(profile => ({
     id: profile.id,
     email: profile.email,
     name: profile.name || profile.username || ''
@@ -709,13 +796,33 @@ export const getConversations = async (): Promise<ConversationData[]> => {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
-  // Get all conversations where user is a participant
-  const { data: conversations, error: convError } = await supabase
-    .from('conversations')
-    .select('*')
-    .or(`participant_1.eq.${user.id},participant_2.eq.${user.id}`)
-    .order('updated_at', { ascending: false });
+  // Validate user.id to prevent SQL injection (defense in depth)
+  if (!isValidUUID(user.id)) {
+    throw new Error('Invalid user ID format');
+  }
 
+  // Get all conversations where user is a participant
+  // Use separate queries to avoid .or() string interpolation
+  const [asParticipant1, asParticipant2] = await Promise.all([
+    supabase
+      .from('conversations')
+      .select('*')
+      .eq('participant_1', user.id)
+      .order('updated_at', { ascending: false }),
+    supabase
+      .from('conversations')
+      .select('*')
+      .eq('participant_2', user.id)
+      .order('updated_at', { ascending: false })
+  ]);
+
+  // Combine and sort by updated_at
+  const conversations = [
+    ...(asParticipant1.data || []),
+    ...(asParticipant2.data || [])
+  ].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+
+  const convError = asParticipant1.error || asParticipant2.error;
   if (convError) throw convError;
 
   // Get friend info and last messages for each conversation
@@ -838,13 +945,28 @@ export const getOrCreateConversation = async (otherUserId: string): Promise<stri
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
-  // Check if conversation exists
-  const { data: existing } = await supabase
-    .from('conversations')
-    .select('id')
-    .or(`and(participant_1.eq.${user.id},participant_2.eq.${otherUserId}),and(participant_1.eq.${otherUserId},participant_2.eq.${user.id})`)
-    .single();
+  // Validate UUIDs to prevent SQL injection
+  if (!isValidUUID(user.id) || !isValidUUID(otherUserId)) {
+    throw new Error('Invalid user ID format');
+  }
 
+  // Check if conversation exists using separate queries (safer than .or() interpolation)
+  const [conv1, conv2] = await Promise.all([
+    supabase
+      .from('conversations')
+      .select('id')
+      .eq('participant_1', user.id)
+      .eq('participant_2', otherUserId)
+      .single(),
+    supabase
+      .from('conversations')
+      .select('id')
+      .eq('participant_1', otherUserId)
+      .eq('participant_2', user.id)
+      .single()
+  ]);
+
+  const existing = conv1.data || conv2.data;
   if (existing) return existing.id;
 
   // Create new conversation
@@ -993,13 +1115,23 @@ export const createNotification = async (notification: {
   };
 };
 
-export const markNotificationAsRead = async (notificationId: string): Promise<void> => {
+export const markNotificationAsRead = async (notificationId: string, newTitle?: string): Promise<void> => {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
 
+  const updateData: { read: boolean; updated_at: string; title?: string } = { 
+    read: true, 
+    updated_at: new Date().toISOString() 
+  };
+  
+  // If a new title is provided, update it as well (for friend request actions)
+  if (newTitle) {
+    updateData.title = newTitle;
+  }
+
   const { error } = await supabase
     .from('notifications')
-    .update({ read: true, updated_at: new Date().toISOString() })
+    .update(updateData)
     .eq('id', notificationId)
     .eq('user_id', user.id);
 
@@ -1490,6 +1622,102 @@ export const subscribeToGroups = (
 
   return () => {
     supabase.removeChannel(channel);
+  };
+};
+
+// ===== NOTIFICATION SUBSCRIPTIONS =====
+
+// Raw notification data from Supabase (snake_case fields from real-time subscription)
+export interface RawNotificationData {
+  id: string;
+  user_id: string;
+  type: string;
+  title: string;
+  message: string;
+  read: boolean;
+  created_at: string;
+  request_id?: string;
+  approver_id?: string;
+  metadata?: Record<string, unknown>;
+}
+
+// Subscribe to real-time notifications for a user
+export const subscribeToNotifications = (
+  userId: string,
+  onNotification: (notification: RawNotificationData) => void,
+  onFriendUpdate: () => void
+) => {
+  // Channel for notifications table
+  const notificationsChannel = supabase
+    .channel(`notifications:${userId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'notifications',
+        filter: `user_id=eq.${userId}`
+      },
+      (payload) => {
+        onNotification(payload.new as RawNotificationData);
+      }
+    )
+    .subscribe();
+
+  // Channel for friends table updates (for approver/viewer additions and acceptances)
+  const friendsChannel = supabase
+    .channel(`friends:${userId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'friends',
+        filter: `user_id=eq.${userId}`
+      },
+      () => {
+        onFriendUpdate();
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'friends',
+        filter: `friend_id=eq.${userId}`
+      },
+      () => {
+        onFriendUpdate();
+      }
+    )
+    .subscribe();
+
+  // Channel for payment requests (for request submissions)
+  const paymentRequestsChannel = supabase
+    .channel(`payment_requests:${userId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'payment_requests'
+      },
+      async (payload) => {
+        const request = payload.new as any;
+        // Only notify if user is an approver/viewer on this request
+        if (request.approvers?.includes(userId) || request.viewers?.includes(userId)) {
+          // Trigger a refresh to update the badge
+          onFriendUpdate(); // Reuse this to trigger notifications fetch
+        }
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(notificationsChannel);
+    supabase.removeChannel(friendsChannel);
+    supabase.removeChannel(paymentRequestsChannel);
   };
 };
 

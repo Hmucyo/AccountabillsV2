@@ -3,7 +3,7 @@ import { Wallet, Shield, Users, ArrowRight, Eye, EyeOff, Mail } from 'lucide-rea
 import { signUp, signIn } from '../utils/api';
 
 interface LandingPageProps {
-  onLogin: (user: { name: string; email: string }) => void;
+  onLogin: (user: { id: string; name: string; email: string }) => void;
 }
 
 // Phone number formatting function
@@ -61,19 +61,21 @@ export function LandingPage({ onLogin }: LandingPageProps) {
 
         // Session was returned directly (email confirmation disabled)
         if (signUpResponse.session) {
+          const userId = signUpResponse.user?.id || '';
           const userName = signUpResponse.user?.user_metadata?.name || formData.name;
           const userEmail = signUpResponse.user?.email || formData.email;
           console.log('Signup successful:', userName);
-          onLogin({ name: userName, email: userEmail });
+          onLogin({ id: userId, name: userName, email: userEmail });
         }
       } else {
         // Sign in
         console.log('🔵 Signing in...');
         const { user } = await signIn(formData.email, formData.password);
+        const userId = user?.id || '';
         const userName = user?.user_metadata?.name || 'User';
         const userEmail = user?.email || '';
         console.log('✅ Sign in successful:', userName);
-        onLogin({ name: userName, email: userEmail });
+        onLogin({ id: userId, name: userName, email: userEmail });
       }
     } catch (err: any) {
       console.error('Auth error:', err);

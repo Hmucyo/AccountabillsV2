@@ -14,17 +14,13 @@ import { Notifications } from './components/Notifications';
 import {
   getSession,
   signOut,
-  getWalletBalance,
-  getMyRequests,
-  getRequestsToApprove,
+  boot,
   createRequest as apiCreateRequest,
   updateRequestStatus as apiUpdateRequestStatus,
   checkBackendHealth,
   getCurrentUser,
   getAccessToken,
   initializeUser,
-  getTransactions,
-  getCard,
   createCard,
   CardData,
   supabase,
@@ -42,13 +38,17 @@ import {
   markMessagesAsRead as apiMarkMessagesAsRead,
   getOrCreateConversation,
   subscribeToMessages,
+  subscribeToNotifications,
   sendFriendRequest,
   acceptFriendRequest as apiAcceptFriendRequest,
   rejectFriendRequest as apiRejectFriendRequest,
+  // Group APIs
+  getGroups as apiGetGroups,
   Friend,
   NotificationData,
   ConversationData,
-  MessageData
+  MessageData,
+  GroupWithMembers
 } from './utils/api';
 
 export type RequestStatus = 'pending' | 'approved' | 'rejected';
@@ -146,7 +146,7 @@ const transformApiRequest = (apiReq: any, currentUserName: string): MoneyRequest
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [currentUser, setCurrentUser] = useState<{ name: string; email: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string; name: string; email: string } | null>(null);
   const [currentView, setCurrentView] = useState<View>('dashboard');
   const [previousView, setPreviousView] = useState<View>('dashboard');
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -190,17 +190,18 @@ export default function App() {
 
     setIsLoading(true);
     try {
-      // Fetch wallet balance, transactions, and card from Marqeta
+      // ========================================================
+      // PHASE 1: Boot endpoint (single call for backend data)
+      // Fetches: balance, transactions, card, myRequests, requestsToApprove
+      // ========================================================
       try {
-        const [balanceData, transactionsData, cardData] = await Promise.all([
-          getWalletBalance().catch(e => { console.error('Balance error:', e); return { balance: 0 }; }),
-          getTransactions().catch(e => { console.error('Transactions error:', e); return []; }),
-          getCard().catch(e => { console.error('Card error:', e); return { hasCard: false, card: null }; })
-        ]);
-        setWalletBalance(balanceData.balance || 0);
+        const bootData = await boot();
+        
+        // Set wallet balance
+        setWalletBalance(bootData.balance || 0);
         
         // Transform Marqeta transactions to our format
-        const formattedTransactions = (transactionsData || []).map((tx: any) => ({
+        const formattedTransactions = (bootData.transactions || []).map((tx: any) => ({
           id: tx.token || tx.id,
           type: tx.type,
           description: tx.memo || tx.type || 'Transaction',
@@ -211,23 +212,12 @@ export default function App() {
         setTransactions(formattedTransactions);
 
         // Set card if exists
-        if (cardData?.hasCard && cardData?.card) {
-          setUserCard(cardData.card);
+        if (bootData.card?.hasCard && bootData.card?.card) {
+          setUserCard(bootData.card.card);
         }
-      } catch (error) {
-        console.error('Failed to fetch wallet data:', error);
-        setWalletBalance(0);
-      }
-
-      // Fetch my requests and requests to approve
-      try {
-        const [myRequests, toApprove] = await Promise.all([
-          getMyRequests().catch(() => []),
-          getRequestsToApprove().catch(() => [])
-        ]);
 
         // Combine and dedupe requests
-        const allRequests = [...myRequests, ...toApprove];
+        const allRequests = [...(bootData.myRequests || []), ...(bootData.requestsToApprove || [])];
         const uniqueRequests = allRequests.filter((req, index, self) =>
           index === self.findIndex(r => r.id === req.id)
         );
@@ -238,40 +228,90 @@ export default function App() {
         setRequests(transformedRequests);
 
         // Generate feed items from requests
-        const newFeedItems: FeedItem[] = transformedRequests.map(req => ({
-          id: `${req.id}-feed`,
-          type: req.status === 'pending' ? 'submitted' : req.status,
-          requestId: req.id,
-          user: req.submittedBy,
-          amount: req.amount,
-          description: `${req.status === 'pending' ? 'submitted' : req.status} request for ${req.description}`,
-          timestamp: req.date,
-          status: req.status
-        }));
+        const newFeedItems: FeedItem[] = transformedRequests.map(req => {
+          // Determine who performed the action
+          let actionUser = req.submittedBy;
+          let actionDescription = `submitted a request for ${req.description}`;
+          
+          if (req.status === 'rejected' && req.rejectedBy) {
+            // For rejected requests, show who rejected
+            actionUser = req.rejectedBy === currentUser.name ? 'You' : req.rejectedBy;
+            const requesterName = req.submittedBy === 'You' ? 'your' : `${req.submittedBy}'s`;
+            actionDescription = `rejected ${requesterName} request for ${req.description}`;
+          } else if (req.status === 'approved' && req.approvedBy && req.approvedBy.length > 0) {
+            // For approved requests, show who approved (last approver for now)
+            const lastApprover = req.approvedBy[req.approvedBy.length - 1];
+            actionUser = lastApprover === currentUser.name ? 'You' : lastApprover;
+            const requesterName = req.submittedBy === 'You' ? 'your' : `${req.submittedBy}'s`;
+            actionDescription = `approved ${requesterName} request for ${req.description}`;
+          }
+          
+          return {
+            id: `${req.id}-feed`,
+            type: req.status === 'pending' ? 'submitted' : req.status,
+            requestId: req.id,
+            user: actionUser,
+            amount: req.amount,
+            description: actionDescription,
+            timestamp: req.date,
+            status: req.status
+          };
+        });
         setFeedItems(newFeedItems);
       } catch (error) {
-        console.error('Failed to fetch requests:', error);
+        console.error('Failed to fetch boot data:', error);
+        setWalletBalance(0);
       }
 
-      // Fetch friends/approvers from Supabase
-      try {
-        const friendsData = await getFriends();
-        const transformedApprovers: Approver[] = friendsData.map(f => ({
-          id: f.id,  // Friend record ID (for removing)
-          userId: f.friendId,  // Actual user ID (for groups, messaging)
+      // ========================================================
+      // PHASE 2: Parallel Supabase calls (friends, groups, notifications, conversations)
+      // All fetched in parallel for maximum speed
+      // ========================================================
+      const [friendsResult, groupsResult, notificationsResult, conversationsResult] = await Promise.allSettled([
+        getFriends().catch(e => { console.error('Friends error:', e); return []; }),
+        apiGetGroups().catch(e => { console.error('Groups error:', e); return []; }),
+        apiGetNotifications().catch(e => { console.error('Notifications error:', e); return []; }),
+        apiGetConversations().catch(e => { console.error('Conversations error:', e); return []; })
+      ]);
+
+      // Process friends
+      let transformedApprovers: Approver[] = [];
+      const friendsData = friendsResult.status === 'fulfilled' ? friendsResult.value : [];
+      if (Array.isArray(friendsData)) {
+        transformedApprovers = friendsData.map(f => ({
+          id: f.id,
+          userId: f.friendId,
           name: f.friendName,
           email: f.friendEmail,
           avatar: f.friendAvatar,
           role: f.role
         }));
         setApprovers(transformedApprovers);
-      } catch (error) {
-        console.error('Failed to fetch friends:', error);
       }
 
-      // Fetch notifications from Supabase
-      try {
-        const notificationsData = await apiGetNotifications();
+      // Process groups (uses transformedApprovers for role mapping)
+      const groupsData = groupsResult.status === 'fulfilled' ? groupsResult.value : [];
+      if (Array.isArray(groupsData)) {
+        const transformedGroups: ApproverGroup[] = groupsData.map(g => {
+          const members: Approver[] = g.members.map(member => {
+            const friendRecord = transformedApprovers.find(a => a.userId === member.user_id);
+            return {
+              id: member.id,
+              userId: member.user_id,
+              name: (member as any).profile?.name || 'Unknown',
+              email: (member as any).profile?.email || '',
+              avatar: (member as any).profile?.avatar || '👤',
+              role: friendRecord?.role || 'viewer'
+            };
+          });
+          return { id: g.id, name: g.name, members, createdAt: g.created_at };
+        });
+        setApproverGroups(transformedGroups);
+      }
+
+      // Process notifications
+      const notificationsData = notificationsResult.status === 'fulfilled' ? notificationsResult.value : [];
+      if (Array.isArray(notificationsData)) {
         const transformedNotifications: Notification[] = notificationsData.map(n => ({
           id: n.id,
           type: n.type,
@@ -283,13 +323,11 @@ export default function App() {
           approverId: n.approverId
         }));
         setNotifications(transformedNotifications);
-      } catch (error) {
-        console.error('Failed to fetch notifications:', error);
       }
 
-      // Fetch conversations from Supabase
-      try {
-        const conversationsData = await apiGetConversations();
+      // Process conversations
+      const conversationsData = conversationsResult.status === 'fulfilled' ? conversationsResult.value : [];
+      if (Array.isArray(conversationsData)) {
         const transformedConversations: Conversation[] = conversationsData.map(c => ({
           id: c.id,
           participant: c.participantName,
@@ -300,12 +338,10 @@ export default function App() {
         }));
         setConversations(transformedConversations);
 
-        // Fetch messages for all conversations
-        const allMessages: Message[] = [];
-        for (const conv of conversationsData) {
-          try {
-            const msgs = await apiGetMessages(conv.id);
-            const transformedMsgs: Message[] = msgs.map(m => ({
+        // Fetch messages for all conversations in parallel
+        const messagePromises = conversationsData.map(conv =>
+          apiGetMessages(conv.id)
+            .then(msgs => msgs.map(m => ({
               id: m.id,
               conversationId: m.conversationId,
               sender: m.senderName,
@@ -314,15 +350,11 @@ export default function App() {
               timestamp: m.createdAt,
               read: m.read,
               requestId: m.requestId
-            }));
-            allMessages.push(...transformedMsgs);
-          } catch (error) {
-            console.error(`Failed to fetch messages for conversation ${conv.id}:`, error);
-          }
-        }
-        setMessages(allMessages);
-      } catch (error) {
-        console.error('Failed to fetch conversations:', error);
+            })))
+            .catch(e => { console.error(`Messages error for ${conv.id}:`, e); return []; })
+        );
+        const allMessageArrays = await Promise.all(messagePromises);
+        setMessages(allMessageArrays.flat());
       }
 
     } catch (error) {
@@ -354,8 +386,27 @@ export default function App() {
         // On new message
         (newMessage) => {
           setMessages(prev => {
-            // Avoid duplicates
+            // Avoid duplicates - check by ID first
             if (prev.some(m => m.id === newMessage.id)) return prev;
+            
+            // For messages sent by current user, also check for optimistic duplicates
+            // (optimistic messages have timestamp IDs, real messages have UUIDs)
+            if (newMessage.senderId === user.id) {
+              const hasOptimisticDuplicate = prev.some(m => 
+                m.sender === 'You' && 
+                m.text === newMessage.text && 
+                m.conversationId === newMessage.conversationId
+              );
+              if (hasOptimisticDuplicate) {
+                // Update the optimistic message with the real ID instead of adding duplicate
+                return prev.map(m => 
+                  (m.sender === 'You' && m.text === newMessage.text && m.conversationId === newMessage.conversationId)
+                    ? { ...m, id: newMessage.id }
+                    : m
+                );
+              }
+            }
+            
             return [...prev, {
               id: newMessage.id,
               conversationId: newMessage.conversationId,
@@ -395,6 +446,89 @@ export default function App() {
     };
   }, [currentUser]);
 
+  // Subscribe to real-time notifications (friend requests, approver additions, request submissions)
+  useEffect(() => {
+    if (!currentUser) return;
+
+    let unsubscribe: (() => void) | null = null;
+
+    const setupNotificationSubscription = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Helper to fetch and refresh notifications
+      const refreshNotifications = async () => {
+        try {
+          const notificationsData = await apiGetNotifications();
+          // Use the same transformation as fetchUserData - preserve original title/approverId from API
+          const transformedNotifications: Notification[] = notificationsData.map(n => ({
+            id: n.id,
+            type: n.type,
+            title: n.title, // Keep original title from database
+            message: n.message,
+            timestamp: n.createdAt, // Use createdAt (camelCase) from API
+            read: n.read,
+            requestId: n.requestId,
+            approverId: n.approverId // Preserve approverId for friend request buttons
+          }));
+          setNotifications(transformedNotifications);
+        } catch (error) {
+          console.error('Failed to refresh notifications:', error);
+        }
+      };
+
+      // Helper to refresh friends/approvers
+      const refreshFriends = async () => {
+        try {
+          const friendsData = await getFriends();
+          const transformedApprovers: Approver[] = friendsData.map(f => ({
+            id: f.id,
+            name: f.friendName || f.friendEmail,
+            email: f.friendEmail,
+            avatar: f.friendAvatar || '',
+            role: f.role as 'viewer' | 'approver',
+            userId: f.friendId
+          }));
+          setApprovers(transformedApprovers);
+        } catch (error) {
+          console.error('Failed to refresh friends:', error);
+        }
+      };
+
+      unsubscribe = subscribeToNotifications(
+        user.id,
+        // On new notification - add it to the list
+        (notification) => {
+          setNotifications(prev => {
+            // Avoid duplicates
+            if (prev.some(n => n.id === notification.id)) return prev;
+            return [{
+              id: notification.id,
+              type: notification.type as 'friend_request' | 'approval_request' | 'request_reviewed',
+              title: notification.title, // Use actual title from database
+              message: notification.message,
+              timestamp: notification.created_at,
+              read: notification.read,
+              requestId: notification.request_id, // Use request_id from database
+              approverId: notification.approver_id // Preserve approverId for friend requests
+            }, ...prev];
+          });
+        },
+        // On friend/request update - refresh both notifications and friends
+        async () => {
+          await refreshNotifications();
+          await refreshFriends();
+        }
+      );
+    };
+
+    setupNotificationSubscription();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [currentUser]);
+
   // Calculate accessible funds from approved requests submitted by the user
   const accessibleFunds = requests
     .filter(req => req.submittedBy === 'You' && req.status === 'approved')
@@ -412,19 +546,20 @@ export default function App() {
       ).filter(Boolean) as Approver[];
 
       // Collect all unique approvers from individuals and groups
+      // Use userId (actual user ID) for deduplication, not friend record ID
       const allApproversMap = new Map<string, Approver>();
       
       // Add individual approvers
       approverObjects.forEach(approver => {
-        allApproversMap.set(approver.id, approver);
+        allApproversMap.set(approver.userId, approver);
       });
       
       // Add group members with approving rights
       if (selectedGroups && selectedGroups.length > 0) {
         selectedGroups.forEach(group => {
           group.members.forEach(member => {
-            if (member.role === 'approver' && !allApproversMap.has(member.id)) {
-              allApproversMap.set(member.id, member);
+            if (member.role === 'approver' && !allApproversMap.has(member.userId)) {
+              allApproversMap.set(member.userId, member);
             }
           });
         });
@@ -438,7 +573,7 @@ export default function App() {
         category: request.category,
         imageUrl: request.imageUrl,
         approvers: allApprovers.map(approver => ({
-          userId: approver.id,
+          userId: approver.userId, // Use actual user ID, not friend record ID
           name: approver.name,
           email: approver.email
         }))
@@ -463,21 +598,7 @@ export default function App() {
       };
       setFeedItems([feedItem, ...feedItems]);
 
-      // Create notifications for all approvers (individuals + group members with approving rights)
-      allApprovers.forEach(approver => {
-        if (approver.name !== 'You') {
-          const notification: Notification = {
-            id: Date.now().toString() + '-notif-' + approver.id,
-            type: 'approval_request',
-            title: 'New Approval Request',
-            message: `You have a new $${request.amount.toFixed(2)} request for ${request.description}`,
-            timestamp: new Date().toISOString(),
-            read: false,
-            requestId: uiRequest.id
-          };
-          setNotifications(prev => [notification, ...prev]);
-        }
-      });
+      // Notifications for approvers are now created by the backend (which has service role key to bypass RLS)
     } catch (error) {
       console.error('Failed to create request:', error);
       // Fallback to local-only for now
@@ -496,11 +617,24 @@ export default function App() {
 
       // Refresh requests from API
       await fetchUserData();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to update request status:', error);
+      
+      // Handle "already processed" error gracefully
+      const errorMessage = error?.message || error?.response?.data?.error || String(error);
+      if (errorMessage.includes('already') && (errorMessage.includes('approved') || errorMessage.includes('rejected') || errorMessage.includes('processed'))) {
+        // The backend now includes who processed it in the error message
+        alert(`${errorMessage}. The page will refresh to show the current status.`);
+        // Refresh data to get the latest status
+        await fetchUserData();
+      } else {
+        alert(`Failed to ${status} request: ${errorMessage}`);
+      }
+      // Re-throw to let ReviewRequest know not to navigate back
+      throw error;
     }
 
-    // Update local state regardless (for immediate UI feedback)
+    // Update local state for immediate UI feedback (only if API succeeded)
     setRequests(requests.map(req => {
       if (req.id === id) {
         const updates: Partial<MoneyRequest> = { status };
@@ -514,31 +648,20 @@ export default function App() {
         }
 
         // Add feed item
+        const requesterName = req.submittedBy === 'You' ? 'your' : `${req.submittedBy}'s`;
         const feedItem: FeedItem = {
           id: Date.now().toString() + '-feed',
           type: status === 'approved' ? 'approved' : 'rejected',
           requestId: id,
           user: approver || 'Unknown',
           amount: req.amount,
-          description: `${status === 'approved' ? 'approved' : 'rejected'} ${req.submittedBy === 'You' ? 'your' : 'the'} request for ${req.description}`,
+          description: `${status === 'approved' ? 'approved' : 'rejected'} ${requesterName} request for ${req.description}`,
           timestamp: new Date().toISOString(),
           status
         };
         setFeedItems([feedItem, ...feedItems]);
 
-        // Create notification for request submitter
-        if (req.submittedBy === 'You' && approver && approver !== 'You') {
-          const notification: Notification = {
-            id: Date.now().toString() + '-notif-review',
-            type: 'request_reviewed',
-            title: status === 'approved' ? 'Request Approved' : 'Request Rejected',
-            message: `${approver} ${status === 'approved' ? 'approved' : 'rejected'} your $${req.amount.toFixed(2)} request for ${req.description}`,
-            timestamp: new Date().toISOString(),
-            read: false,
-            requestId: id
-          };
-          setNotifications(prev => [notification, ...prev]);
-        }
+        // Notifications for request submitter are now created by the backend (which has service role key to bypass RLS)
 
         return { ...req, ...updates };
       }
@@ -734,8 +857,8 @@ export default function App() {
     try {
       await apiAcceptFriendRequest(senderId);
       
-      // Mark notification as read
-      await apiMarkNotificationAsRead(notificationId);
+      // Mark notification as read AND update title in database
+      await apiMarkNotificationAsRead(notificationId, 'Friend Request Accepted');
       setNotifications(notifications.map(n =>
         n.id === notificationId ? { ...n, read: true, title: 'Friend Request Accepted' } : n
       ));
@@ -762,8 +885,8 @@ export default function App() {
     try {
       await apiRejectFriendRequest(senderId);
       
-      // Mark notification as read and update message
-      await apiMarkNotificationAsRead(notificationId);
+      // Mark notification as read AND update title in database
+      await apiMarkNotificationAsRead(notificationId, 'Friend Request Declined');
       setNotifications(notifications.map(n =>
         n.id === notificationId ? { ...n, read: true, title: 'Friend Request Declined' } : n
       ));
@@ -915,6 +1038,8 @@ export default function App() {
             setPreviousView('notifications');
             setSelectedRequestForReview(requestId);
             setCurrentView('review');
+            // Refresh data in background - the review screen will show loading if needed
+            fetchUserData();
           }}
           onAcceptFriendRequest={handleAcceptFriendRequest}
           onRejectFriendRequest={handleRejectFriendRequest}
@@ -955,7 +1080,22 @@ export default function App() {
         />;
       case 'review':
         const requestToReview = requests.find(r => r.id === selectedRequestForReview);
-        if (!requestToReview) return null;
+        if (!requestToReview) {
+          // Request not found in local state - this can happen when navigating from a 
+          // real-time notification before the requests array is refreshed
+          // Refresh the data and show loading state
+          if (!isLoading) {
+            fetchUserData();
+          }
+          return (
+            <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex items-center justify-center">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#9E89FF] mx-auto mb-4"></div>
+                <p className="text-gray-600 dark:text-gray-400">Loading request...</p>
+              </div>
+            </div>
+          );
+        }
         return <ReviewRequest
           request={requestToReview}
           onBack={() => setCurrentView(previousView)}
@@ -1002,6 +1142,7 @@ export default function App() {
         // Now set user state - this will trigger fetchUserData
         setIsLoggedIn(true);
         setCurrentUser({
+          id: session.user.id,
           name: userName,
           email: session.user.email || ''
         });

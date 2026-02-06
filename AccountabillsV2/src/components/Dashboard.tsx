@@ -350,7 +350,7 @@ export function Dashboard({ requests, addRequest, approvers, approverGroups = []
           
           {onNavigateToRequests && (
             <button
-              onClick={onNavigateToRequests}
+              onClick={() => onNavigateToRequests()}
               className="w-full bg-white dark:bg-gray-800 border-2 border-[#9E89FF] text-[#9E89FF] rounded-xl p-4 flex items-center justify-center gap-2 hover:bg-purple-50 dark:hover:bg-gray-700 transition-colors"
             >
               <Plus className="w-5 h-5" />

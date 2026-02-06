@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Search, Send, ArrowLeft, UserPlus, Users, X, Camera, Check, Plus, ChevronRight, Trash2, Loader2 } from 'lucide-react';
+import { Skeleton } from './ui/skeleton';
 import { Conversation, Message, Approver } from '../App';
 import {
   GroupWithMembers,
@@ -35,6 +36,7 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
   // Group state - now uses API types
   const [groups, setGroups] = useState<GroupWithMembers[]>([]);
   const [loadingGroups, setLoadingGroups] = useState(true);
+  const [prevGroupCount, setPrevGroupCount] = useState(2); // Remember last known group count for skeleton
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showGroupDetails, setShowGroupDetails] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<GroupWithMembers | null>(null);
@@ -75,6 +77,10 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
       setLoadingGroups(true);
       const data = await getGroups();
       setGroups(data);
+      // Remember the count for skeleton loading
+      if (data.length > 0) {
+        setPrevGroupCount(data.length);
+      }
     } catch (error) {
       console.error('Failed to fetch groups:', error);
     } finally {
@@ -378,7 +384,7 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
 
   // Debounced group name update
   const [pendingGroupName, setPendingGroupName] = useState<string>('');
-  const groupNameTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const groupNameTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleGroupNameChange = (name: string) => {
     setPendingGroupName(name);
@@ -399,34 +405,17 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
   }, [selectedGroup]);
 
   const addMemberToGroup = async (approver: Approver) => {
-    console.log('addMemberToGroup called:', { approver, selectedGroupId: selectedGroup?.id });
-    // #region agent log
-    fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup',message:'Function called',data:{approver:{id:approver.id,userId:approver.userId,name:approver.name},selectedGroupId:selectedGroup?.id},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     if (!selectedGroup || !approver.userId) {
-      console.log('Early return:', { hasSelectedGroup: !!selectedGroup, hasUserId: !!approver.userId });
-      // #region agent log
-      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:earlyReturn',message:'Early return - missing data',data:{hasSelectedGroup:!!selectedGroup,hasUserId:!!approver.userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       return;
     }
     
     // Check if already a member (compare with userId, not friend record id)
     if (selectedGroup.members.some(m => m.user_id === approver.userId)) {
-      // #region agent log
-      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:alreadyMember',message:'Already a member',data:{userId:approver.userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       return;
     }
     
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:beforeApi',message:'Calling API',data:{groupId:selectedGroup.id,userId:approver.userId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       await apiAddGroupMember(selectedGroup.id, approver.userId);
-      // #region agent log
-      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:success',message:'API call succeeded',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       await fetchGroups();
       // Update selected group with new member
       const updatedGroups = await getGroups();
@@ -436,9 +425,6 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
       }
       setShowAddMembers(false);
     } catch (error: any) {
-      // #region agent log
-      fetch('http://127.0.0.1:7249/ingest/0ba0888f-1760-4d0a-9980-75ce9a4c3963',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Messages.tsx:addMemberToGroup:error',message:'API call failed',data:{error:error?.message||String(error)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       console.error('Failed to add member:', error);
     }
   };
@@ -836,8 +822,21 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
 
       {/* Groups Section */}
       {loadingGroups ? (
-        <div className="flex items-center justify-center py-8">
-          <Loader2 className="w-6 h-6 text-[#9E89FF] animate-spin" />
+        <div className="mb-6">
+          <Skeleton className="h-4 w-16 mb-3 ml-1" />
+          <div className="space-y-2">
+            {Array.from({ length: Math.max(1, Math.min(prevGroupCount, 5)) }).map((_, i) => (
+              <div key={i} className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-200 dark:border-gray-700">
+                <div className="flex gap-3">
+                  <Skeleton className="w-10 h-10 rounded-full flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <Skeleton className="h-4 w-24 mb-2" />
+                    <Skeleton className="h-3 w-40" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       ) : groups.length > 0 && (
         <div className="mb-6">
@@ -855,7 +854,7 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
                     className="relative flex-shrink-0 cursor-pointer"
                   >
                     <GroupAvatar avatarUrl={group.avatar_url} size="sm" />
-                    {group.unreadCount && group.unreadCount > 0 && (
+                    {(group.unreadCount ?? 0) > 0 && (
                       <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
                         {group.unreadCount}
                       </span>
@@ -868,7 +867,7 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
                         {group.lastMessage?.created_at ? getTimeAgo(group.lastMessage.created_at) : ''}
                       </span>
                     </div>
-                    <p className={`text-sm truncate ${group.unreadCount && group.unreadCount > 0 ? 'font-medium text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
+                    <p className={`text-sm truncate ${(group.unreadCount ?? 0) > 0 ? 'font-medium text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
                       {group.lastMessage ? (
                         <>
                           <span className="font-medium">
@@ -1244,7 +1243,6 @@ export function Messages({ conversations, messages, sendMessage, approvers, onNa
       )}
 
       {/* Add Members Modal */}
-      {console.log('Add Members Modal check:', { showAddMembers, hasSelectedGroup: !!selectedGroup })}
       {showAddMembers && selectedGroup && (
         <div 
           className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]"
